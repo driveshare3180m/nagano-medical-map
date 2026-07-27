@@ -1,0 +1,2 @@
+# nagano-medical-map
+
