@@ -691,6 +691,24 @@
     document.getElementById(id).addEventListener("input", renderCircles);
   });
 
+  // 住所または施設名の文字列から緯度経度を検索する共通ヘルパー
+  // Nominatim利用ポリシーに配慮し、呼び出し後に約1.1秒のウェイトを入れます
+  async function geocodeQuery(queryText) {
+    try {
+      const url = "https://nominatim.openstreetmap.org/search?format=json&limit=1&q=" + encodeURIComponent(queryText);
+      const resp = await fetch(url, { headers: { "Accept-Language": "ja" } });
+      const geo = await resp.json();
+      await new Promise(res => setTimeout(res, 1100));
+      if (geo && geo.length > 0) {
+        return { lat: parseFloat(geo[0].lat), lng: parseFloat(geo[0].lon) };
+      }
+      return null;
+    } catch (err) {
+      await new Promise(res => setTimeout(res, 1100));
+      return null;
+    }
+  }
+
   // ---------- Excel取込 ----------
   document.getElementById("btnImport").addEventListener("click", () => {
     const input = document.createElement("input");
@@ -719,7 +737,7 @@
       const dataRows = rows.slice(headerIdx + 1).filter(r => r[nameCol] && String(r[nameCol]).trim());
       showStatus(`${dataRows.length}件を取込中…（住所から座標を検索しています）`, "info");
 
-      let added = 0, failed = 0;
+      let added = 0, failed = 0, failedIndex = 0;
       for (const r of dataRows) {
         const name = String(r[nameCol]).trim();
         const address = addrCol !== -1 ? String(r[addrCol] || "").trim() : "";
@@ -730,16 +748,27 @@
           funcs[k] = idx !== undefined && String(r[idx] || "").trim() !== "";
         });
         let lat = null, lng = null, approx = true;
-        if (address) {
-          try {
-            const url = "https://nominatim.openstreetmap.org/search?format=json&limit=1&q=" + encodeURIComponent(address + " 長野県");
-            const resp = await fetch(url, { headers: { "Accept-Language": "ja" } });
-            const geo = await resp.json();
-            if (geo && geo.length > 0) { lat = parseFloat(geo[0].lat); lng = parseFloat(geo[0].lon); approx = false; }
-            await new Promise(res => setTimeout(res, 1100)); // Nominatim利用ポリシーに配慮したレート制限
-          } catch (err) { /* ignore, fallback below */ }
+
+        // ① まず施設名で検索（OSMに施設として登録されていれば高確率でヒットする）
+        const byName = await geocodeQuery(name + " 長野県");
+        if (byName) { lat = byName.lat; lng = byName.lng; approx = false; }
+
+        // ② ダメなら住所で検索（日本の詳細住所はヒット率が低め）
+        if (lat === null && address) {
+          const byAddr = await geocodeQuery(address + " 長野県");
+          if (byAddr) { lat = byAddr.lat; lng = byAddr.lng; approx = false; }
         }
-        if (lat === null) { lat = CENTER_DEFAULT.lat; lng = CENTER_DEFAULT.lng; failed++; }
+
+        if (lat === null) {
+          // 検索失敗：長野中央病院を中心に少しずつ角度をずらして仮配置（重なり防止・要修正の目印）
+          const angle = (failedIndex * 47) * Math.PI / 180;
+          lat = CENTER_DEFAULT.lat + Math.cos(angle) * 0.012;
+          lng = CENTER_DEFAULT.lng + Math.sin(angle) * 0.012;
+          approx = true;
+          failed++;
+          failedIndex++;
+        }
+
         const newHospital = { id: "h_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7), name, address, lat, lng, funcs, approx };
         hospitals.push(newHospital);
         if (useApi) {
@@ -749,7 +778,7 @@
       }
       if (!useApi) await saveData();
       renderAll();
-      showStatus(`取込完了：${added}件追加${failed > 0 ? `（うち${failed}件は座標未特定のため長野中央病院の位置に仮配置。編集画面で修正してください）` : ""}`, failed > 0 ? "err" : "ok");
+      showStatus(`取込完了：${added}件追加${failed > 0 ? `（うち${failed}件は座標が特定できず仮配置。一覧の「座標概算」表示から編集して正しい位置に修正してください）` : ""}`, failed > 0 ? "err" : "ok");
     };
     input.click();
   });
