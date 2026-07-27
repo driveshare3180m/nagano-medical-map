@@ -1,0 +1,741 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>長野市 医療機関マップ</title>
+</head>
+<body style="margin:0;">
+<div id="app-root"></div>
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
+<style>
+  #app-root, #app-root * { box-sizing: border-box; }
+  #app-root {
+    font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", "Meiryo", sans-serif;
+    color: #222;
+    background: #f6f7f5;
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    min-height: 640px;
+  }
+  .topbar {
+    background: #2c3e35;
+    color: #fff;
+    padding: 10px 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .topbar h1 {
+    font-size: 16px;
+    font-weight: 600;
+    margin: 0;
+  }
+  .topbar .sub {
+    font-size: 11px;
+    color: #c8d3c9;
+    margin-top: 2px;
+  }
+  .topbar-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+  .btn {
+    background: #3f6b4e;
+    color: #fff;
+    border: none;
+    border-radius: 5px;
+    padding: 6px 12px;
+    font-size: 12px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .btn:hover { background: #4f7e5f; }
+  .btn.secondary { background: #55606a; }
+  .btn.secondary:hover { background: #6a7784; }
+  .btn.danger { background: #a94442; }
+  .btn.danger:hover { background: #c1554f; }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .main {
+    flex: 1;
+    display: flex;
+    min-height: 0;
+  }
+  #map { flex: 1; min-width: 0; }
+  .sidebar {
+    width: 340px;
+    min-width: 340px;
+    background: #fff;
+    border-left: 1px solid #ddd;
+    overflow-y: auto;
+    padding: 12px;
+  }
+  .panel {
+    background: #fafaf8;
+    border: 1px solid #e3e3e0;
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin-bottom: 12px;
+  }
+  .panel h2 {
+    font-size: 12px;
+    font-weight: 700;
+    margin: 0 0 8px 0;
+    color: #3f6b4e;
+    letter-spacing: 0.03em;
+  }
+  .func-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12.5px;
+    padding: 3px 0;
+    cursor: pointer;
+    user-select: none;
+  }
+  .func-swatch {
+    width: 12px; height: 12px; border-radius: 3px; flex-shrink: 0;
+    border: 1px solid rgba(0,0,0,0.15);
+  }
+  .row-flex { display: flex; gap: 6px; align-items: center; }
+  .row-flex label { font-size: 12px; color: #555; width: 84px; flex-shrink: 0; }
+  input[type=text], input[type=number], select {
+    width: 100%;
+    font-size: 12.5px;
+    padding: 5px 6px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    background: #fff;
+  }
+  .field { margin-bottom: 6px; }
+  .field label { display: block; font-size: 11.5px; color: #666; margin-bottom: 2px; }
+  .checkbox-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2px 8px;
+    margin: 6px 0;
+  }
+  .checkbox-grid label {
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    cursor: pointer;
+  }
+  .hospital-item {
+    border: 1px solid #e6e6e2;
+    border-radius: 6px;
+    padding: 7px 9px;
+    margin-bottom: 6px;
+    font-size: 12px;
+    background: #fff;
+    cursor: pointer;
+  }
+  .hospital-item:hover { border-color: #3f6b4e; background: #f4f8f5; }
+  .hospital-item .hname { font-weight: 600; font-size: 12.5px; }
+  .hospital-item .haddr { color: #777; font-size: 11px; margin-top: 1px; }
+  .hospital-item .htags { margin-top: 4px; display: flex; gap: 4px; flex-wrap: wrap; }
+  .tag { font-size: 10px; padding: 1px 6px; border-radius: 8px; color: #fff; }
+  .small-note { font-size: 10.5px; color: #888; line-height: 1.5; margin-top: 4px; }
+  .status-msg { font-size: 11.5px; padding: 6px 8px; border-radius: 5px; margin-top: 6px; }
+  .status-msg.ok { background: #e6f2e8; color: #2c6b3f; }
+  .status-msg.err { background: #fbe9e7; color: #b0392f; }
+  .status-msg.info { background: #eef3fa; color: #35577a; }
+  .item-actions { display: flex; gap: 6px; margin-top: 6px; }
+  .item-actions .btn { padding: 4px 8px; font-size: 11px; }
+  .divider { border-top: 1px dashed #ddd; margin: 8px 0; }
+  .leaflet-div-icon.hosp-marker { background: transparent; border: none; }
+  .hosp-marker-inner {
+    width: 26px; height: 26px; border-radius: 50%;
+    border: 2px solid #fff;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.4);
+  }
+  .hosp-marker-label {
+    font-size: 10px;
+    font-weight: 700;
+    color: #222;
+    text-shadow: 0 0 3px #fff, 0 0 3px #fff, 0 0 3px #fff;
+    white-space: nowrap;
+    text-align: center;
+    margin-top: 1px;
+  }
+  .modal-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.35);
+    display: flex; align-items: center; justify-content: center; z-index: 10000;
+  }
+  .modal-box {
+    background: #fff; border-radius: 8px; padding: 16px; width: 340px; max-height: 85vh; overflow-y: auto;
+  }
+  .modal-box h3 { margin: 0 0 10px 0; font-size: 14px; }
+  .hint-pin {
+    background: #fff3cd; border: 1px solid #ffe08a; color: #6b5300;
+    font-size: 11px; padding: 6px 8px; border-radius: 5px; margin-bottom: 8px;
+  }
+  input[type=file] { font-size: 11.5px; }
+</style>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
+<script>
+(function () {
+  "use strict";
+
+  // ---------- 機能定義 ----------
+  const FUNCS = [
+    { key: "急性期", color: "#e63946" },
+    { key: "地メディ", color: "#f4a261" },
+    { key: "地ケア", color: "#2a9d8a" },
+    { key: "回復期", color: "#457b9d" },
+    { key: "療養", color: "#8e44ad" }
+  ];
+  const FUNC_KEYS = FUNCS.map(f => f.key);
+  const CENTER_DEFAULT = { name: "長野中央病院", lat: 36.651165, lng: 138.195577 };
+
+  const SEED_DATA = [
+    { id: "h1", name: "長野赤十字病院", address: "長野市若里5-22-1", lat: 36.6272, lng: 138.190724,
+      funcs: { "急性期": true, "地メディ": false, "地ケア": false, "回復期": false, "療養": false } },
+    { id: "h2", name: "長野中央病院", address: "長野市西鶴賀町1570", lat: 36.651165, lng: 138.195577,
+      funcs: { "急性期": true, "地メディ": true, "地ケア": true, "回復期": true, "療養": false } },
+    { id: "h3", name: "長野松代総合病院付属若穂病院", address: "長野市若穂綿内7615-1", lat: 36.6053, lng: 138.2571,
+      funcs: { "急性期": false, "地メディ": false, "地ケア": false, "回復期": false, "療養": true },
+      approx: true },
+    { id: "h4", name: "長野松代総合病院", address: "長野市松代町松代183", lat: 36.563652, lng: 138.199614,
+      funcs: { "急性期": true, "地メディ": false, "地ケア": false, "回復期": false, "療養": false } }
+  ];
+
+  // ---------- 状態 ----------
+  let hospitals = [];
+  let activeFilters = new Set(FUNC_KEYS); // 表示中の機能
+  let map, markersLayer, circlesLayer;
+  let editingId = null; // 編集中の病院ID（nullなら新規）
+  let pickLatLngMode = false;
+
+  const root = document.getElementById("app-root");
+
+  root.innerHTML = `
+    <div class="topbar">
+      <div>
+        <h1>長野市 医療機関マップ</h1>
+        <div class="sub" id="subTitle">機能別カラー表示 ／ 長野中央病院からの同心円</div>
+      </div>
+      <div class="topbar-actions">
+        <button class="btn secondary" id="btnRefresh" style="display:none;">更新</button>
+        <button class="btn secondary" id="btnImport">Excel取込</button>
+        <button class="btn secondary" id="btnExport">Excel書き出し</button>
+        <button class="btn" id="btnAddNew">＋ 医療機関を追加</button>
+      </div>
+    </div>
+    <div class="main">
+      <div id="map"></div>
+      <div class="sidebar">
+
+        <div class="panel">
+          <h2>機能フィルタ（表示切替）</h2>
+          <div id="funcFilterList"></div>
+        </div>
+
+        <div class="panel">
+          <h2>同心円（実距離ベース）</h2>
+          <div class="field">
+            <label>中心点</label>
+            <select id="circleCenterSelect"></select>
+          </div>
+          <div class="row-flex" style="margin-bottom:6px;">
+            <label>間隔(km)</label>
+            <input type="number" id="circleInterval" value="5" min="0.5" step="0.5" />
+          </div>
+          <div class="row-flex" style="margin-bottom:6px;">
+            <label>本数</label>
+            <input type="number" id="circleCount" value="4" min="1" max="15" step="1" />
+          </div>
+          <label style="font-size:12px; display:flex; align-items:center; gap:6px; cursor:pointer;">
+            <input type="checkbox" id="circleToggle" checked /> 同心円を表示する
+          </label>
+        </div>
+
+        <div class="panel">
+          <h2>医療機関一覧 (<span id="hospCount">0</span>件)</h2>
+          <div id="hospitalList"></div>
+        </div>
+
+        <div id="statusArea"></div>
+      </div>
+    </div>
+  `;
+
+  // ---------- 機能フィルタUI ----------
+  const filterListEl = document.getElementById("funcFilterList");
+  FUNCS.forEach(f => {
+    const row = document.createElement("div");
+    row.className = "func-row";
+    row.innerHTML = `<input type="checkbox" checked data-func="${f.key}" />
+      <span class="func-swatch" style="background:${f.color}"></span>
+      <span>${f.key}</span>`;
+    row.querySelector("input").addEventListener("change", (e) => {
+      if (e.target.checked) activeFilters.add(f.key);
+      else activeFilters.delete(f.key);
+      renderMarkers();
+    });
+    filterListEl.appendChild(row);
+  });
+
+  // ---------- 地図初期化 ----------
+  map = L.map("map", { zoomControl: true }).setView([CENTER_DEFAULT.lat, CENTER_DEFAULT.lng], 12);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19,
+    attribution: "&copy; OpenStreetMap contributors"
+  }).addTo(map);
+  L.control.scale({ metric: true, imperial: false, position: "bottomleft" }).addTo(map);
+  markersLayer = L.layerGroup().addTo(map);
+  circlesLayer = L.layerGroup().addTo(map);
+
+  map.on("click", (e) => {
+    if (pickLatLngMode) {
+      document.getElementById("f_lat").value = e.latlng.lat.toFixed(6);
+      document.getElementById("f_lng").value = e.latlng.lng.toFixed(6);
+      pickLatLngMode = false;
+      document.getElementById("btnPickOnMap").textContent = "地図をクリックして指定";
+      showStatus("地図上の位置を取得しました。", "ok");
+    }
+  });
+
+  // ---------- マーカー描画（機能円グラフアイコン） ----------
+  function buildPieGradient(funcsObj) {
+    const active = FUNCS.filter(f => funcsObj[f.key]);
+    if (active.length === 0) return "#999";
+    const step = 100 / active.length;
+    let stops = [];
+    active.forEach((f, i) => {
+      const start = (i * step).toFixed(1);
+      const end = ((i + 1) * step).toFixed(1);
+      stops.push(`${f.color} ${start}% ${end}%`);
+    });
+    return `conic-gradient(${stops.join(",")})`;
+  }
+
+  function hospitalMatchesFilter(h) {
+    if (activeFilters.size === FUNC_KEYS.length) return true; // 全部ON→全表示
+    return FUNC_KEYS.some(k => activeFilters.has(k) && h.funcs[k]);
+  }
+
+  function renderMarkers() {
+    markersLayer.clearLayers();
+    hospitals.forEach(h => {
+      if (!hospitalMatchesFilter(h)) return;
+      const bg = buildPieGradient(h.funcs);
+      const icon = L.divIcon({
+        className: "hosp-marker",
+        html: `<div>
+                 <div class="hosp-marker-inner" style="background:${bg}"></div>
+                 <div class="hosp-marker-label">${h.name}</div>
+               </div>`,
+        iconSize: [26, 40],
+        iconAnchor: [13, 13]
+      });
+      const marker = L.marker([h.lat, h.lng], { icon });
+      const tagsHtml = FUNC_KEYS.filter(k => h.funcs[k])
+        .map(k => {
+          const c = FUNCS.find(f => f.key === k).color;
+          return `<span style="background:${c};color:#fff;padding:1px 6px;border-radius:8px;font-size:10px;">${k}</span>`;
+        }).join(" ");
+      marker.bindPopup(`<div style="font-size:12.5px;min-width:160px;">
+          <div style="font-weight:700;margin-bottom:3px;">${h.name}</div>
+          <div style="color:#777;font-size:11px;margin-bottom:5px;">${h.address || ""}</div>
+          <div>${tagsHtml || "(機能未設定)"}</div>
+        </div>`);
+      marker.addTo(markersLayer);
+    });
+  }
+
+  // ---------- 同心円描画 ----------
+  function renderCircles() {
+    circlesLayer.clearLayers();
+    const show = document.getElementById("circleToggle").checked;
+    if (!show) return;
+    const centerId = document.getElementById("circleCenterSelect").value;
+    const interval = parseFloat(document.getElementById("circleInterval").value) || 5;
+    const count = parseInt(document.getElementById("circleCount").value) || 4;
+    let center;
+    if (centerId === "__default__") center = CENTER_DEFAULT;
+    else {
+      const h = hospitals.find(x => x.id === centerId);
+      center = h ? { lat: h.lat, lng: h.lng, name: h.name } : CENTER_DEFAULT;
+    }
+    for (let i = 1; i <= count; i++) {
+      const radiusM = interval * i * 1000;
+      const circle = L.circle([center.lat, center.lng], {
+        radius: radiusM,
+        color: "#3f6b4e",
+        weight: 1,
+        fillOpacity: 0,
+        dashArray: "4,4"
+      });
+      circle.bindTooltip(`${(interval * i).toFixed(1)}km`, { permanent: true, direction: "right", className: "", opacity: 0.8 });
+      circle.addTo(circlesLayer);
+    }
+    L.circleMarker([center.lat, center.lng], { radius: 4, color: "#3f6b4e", fillColor: "#3f6b4e", fillOpacity: 1 })
+      .bindTooltip(center.name || "中心点", { permanent: false })
+      .addTo(circlesLayer);
+  }
+
+  function refreshCenterSelect() {
+    const sel = document.getElementById("circleCenterSelect");
+    const prev = sel.value;
+    sel.innerHTML = `<option value="__default__">長野中央病院（既定）</option>` +
+      hospitals.map(h => `<option value="${h.id}">${h.name}</option>`).join("");
+    if ([...sel.options].some(o => o.value === prev)) sel.value = prev;
+  }
+
+  // ---------- 一覧描画 ----------
+  function renderList() {
+    const listEl = document.getElementById("hospitalList");
+    document.getElementById("hospCount").textContent = hospitals.length;
+    listEl.innerHTML = "";
+    hospitals.forEach(h => {
+      const div = document.createElement("div");
+      div.className = "hospital-item";
+      const tagsHtml = FUNC_KEYS.filter(k => h.funcs[k])
+        .map(k => {
+          const c = FUNCS.find(f => f.key === k).color;
+          return `<span class="tag" style="background:${c}">${k}</span>`;
+        }).join("");
+      div.innerHTML = `
+        <div class="hname">${h.name}${h.approx ? ' <span style="color:#c07a00;font-size:10px;">(座標概算)</span>' : ""}</div>
+        <div class="haddr">${h.address || ""}</div>
+        <div class="htags">${tagsHtml}</div>
+        <div class="item-actions">
+          <button class="btn secondary" data-act="focus" data-id="${h.id}">地図で見る</button>
+          <button class="btn secondary" data-act="edit" data-id="${h.id}">編集</button>
+          <button class="btn danger" data-act="del" data-id="${h.id}">削除</button>
+        </div>
+      `;
+      listEl.appendChild(div);
+    });
+    listEl.querySelectorAll("button").forEach(btn => {
+      btn.addEventListener("click", (e) => {
+        const id = e.target.getAttribute("data-id");
+        const act = e.target.getAttribute("data-act");
+        const h = hospitals.find(x => x.id === id);
+        if (!h) return;
+        if (act === "focus") { map.setView([h.lat, h.lng], 15); }
+        if (act === "edit") { openEditModal(h); }
+        if (act === "del") {
+          if (confirm(`「${h.name}」を削除しますか？`)) {
+            hospitals = hospitals.filter(x => x.id !== id);
+            renderAll();
+            if (useApi) {
+              apiDelete(id).catch(err => showStatus("削除の同期に失敗しました: " + err.message, "err"));
+            } else {
+              saveData();
+            }
+          }
+        }
+      });
+    });
+  }
+
+  function renderAll() {
+    renderMarkers();
+    refreshCenterSelect();
+    renderCircles();
+    renderList();
+  }
+
+  // ---------- API連携（Google Sheets + Apps Script）----------
+  // Apps Scriptで発行したウェブアプリURLをここに貼り付けてください。
+  // 空欄のままなら従来どおりブラウザ内保存（localStorage / window.storage）で動作します。
+  const API_URL = "https://script.google.com/macros/s/AKfycbyetSp87fP_MizanPjASIJd5KdRlu4rYxFHJkjK3KD8DC7Yn1ZNcWbjnv7QLW8fsUf6fw/exec"; 
+  const useApi = !!(API_URL && API_URL.indexOf("https://script.google.com/") === 0);
+  const AUTO_REFRESH_MS = 30000; // 他の人の更新を反映する間隔（ミリ秒）
+
+  async function apiGetAll() {
+    const res = await fetch(API_URL, { method: "GET" });
+    const json = await res.json();
+    if (json.status !== "ok") throw new Error(json.message || "API error");
+    return json.hospitals || [];
+  }
+  async function apiUpsert(hospital) {
+    const res = await fetch(API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" }, // CORSプリフライト回避のためtext/plainで送信
+      body: JSON.stringify({ action: "upsert", hospital })
+    });
+    const json = await res.json();
+    if (json.status !== "ok") throw new Error(json.message || "API error");
+  }
+  async function apiDelete(id) {
+    const res = await fetch(API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({ action: "delete", id })
+    });
+    const json = await res.json();
+    if (json.status !== "ok") throw new Error(json.message || "API error");
+  }
+
+  // ---------- 永続化 ----------
+  // Claude.aiのartifact内ではwindow.storage（アカウント紐づけの永続保存）を使い、
+  // それ以外の環境（Cloudflare Workers / GitHub Pages等にデプロイした場合）では
+  // ブラウザのlocalStorage（この端末・このブラウザにのみ保存）に自動的に切り替わります。
+  const STORAGE_KEY = "nagano_medical_hospitals";
+  const hasClaudeStorage = (typeof window.storage !== "undefined" && window.storage && typeof window.storage.get === "function");
+
+  // saveData()は「APIモードではない場合のみ」ブラウザ内保存を行います。
+  // APIモード時は各操作（追加/編集/削除）の箇所で個別にapiUpsert/apiDeleteを呼びます。
+  async function saveData() {
+    if (useApi) return;
+    try {
+      if (hasClaudeStorage) {
+        await window.storage.set(STORAGE_KEY, JSON.stringify(hospitals), false);
+      } else {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(hospitals));
+      }
+    } catch (err) {
+      console.error("保存エラー", err);
+      showStatus("保存に失敗しました（ブラウザストレージのエラー）。", "err");
+    }
+  }
+
+  async function loadData(isRefresh) {
+    try {
+      if (useApi) {
+        hospitals = await apiGetAll();
+        if (!isRefresh) showStatus("スプレッドシートから読み込みました（共有モード）。", "info");
+      } else if (hasClaudeStorage) {
+        const res = await window.storage.get(STORAGE_KEY, false);
+        if (res && res.value) {
+          hospitals = JSON.parse(res.value);
+          showStatus("保存済みデータを読み込みました。", "info");
+        } else {
+          hospitals = SEED_DATA.slice();
+          await saveData();
+        }
+      } else {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (raw) {
+          hospitals = JSON.parse(raw);
+          showStatus("この端末に保存済みのデータを読み込みました。", "info");
+        } else {
+          hospitals = SEED_DATA.slice();
+          await saveData();
+        }
+      }
+    } catch (err) {
+      console.error(err);
+      if (useApi) {
+        showStatus("スプレッドシートへの接続に失敗しました。API_URLの設定を確認してください。", "err");
+        if (!hospitals || hospitals.length === 0) hospitals = SEED_DATA.slice();
+      } else {
+        hospitals = SEED_DATA.slice();
+      }
+    }
+    renderAll();
+  }
+
+  // ---------- ステータス表示 ----------
+  let statusTimer = null;
+  function showStatus(msg, type) {
+    const el = document.getElementById("statusArea");
+    el.innerHTML = `<div class="status-msg ${type}">${msg}</div>`;
+    clearTimeout(statusTimer);
+    statusTimer = setTimeout(() => { el.innerHTML = ""; }, 5000);
+  }
+
+  // ---------- 追加/編集モーダル ----------
+  function openEditModal(hospital) {
+    editingId = hospital ? hospital.id : null;
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+    const checkboxesHtml = FUNCS.map(f => `
+      <label><input type="checkbox" data-fkey="${f.key}" ${hospital && hospital.funcs[f.key] ? "checked" : ""}/>
+        <span class="func-swatch" style="background:${f.color}"></span>${f.key}</label>
+    `).join("");
+    overlay.innerHTML = `
+      <div class="modal-box">
+        <h3>${hospital ? "医療機関を編集" : "医療機関を追加"}</h3>
+        <div class="hint-pin">緯度・経度は「地図をクリックして指定」ボタンを押してから地図上の位置をクリックすると自動入力されます。住所検索も利用できます。</div>
+        <div class="field"><label>医療機関名</label><input type="text" id="f_name" value="${hospital ? hospital.name : ""}" /></div>
+        <div class="field"><label>住所</label><input type="text" id="f_address" value="${hospital ? (hospital.address || "") : ""}" /></div>
+        <div class="row-flex" style="margin-bottom:6px;">
+          <button class="btn secondary" id="btnGeocode" style="flex:1;">住所から緯度経度を検索</button>
+        </div>
+        <div class="field"><label>緯度 (lat)</label><input type="text" id="f_lat" value="${hospital ? hospital.lat : ""}" /></div>
+        <div class="field"><label>経度 (lng)</label><input type="text" id="f_lng" value="${hospital ? hospital.lng : ""}" /></div>
+        <button class="btn secondary" id="btnPickOnMap" style="width:100%;margin-bottom:8px;">地図をクリックして指定</button>
+        <div class="field">
+          <label>機能（複数選択可）</label>
+          <div class="checkbox-grid">${checkboxesHtml}</div>
+        </div>
+        <div class="divider"></div>
+        <div class="row-flex" style="justify-content:flex-end;gap:8px;">
+          <button class="btn secondary" id="btnCancel">キャンセル</button>
+          <button class="btn" id="btnSave">保存</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+
+    document.getElementById("btnCancel").addEventListener("click", () => { pickLatLngMode = false; overlay.remove(); });
+    document.getElementById("btnPickOnMap").addEventListener("click", (e) => {
+      pickLatLngMode = !pickLatLngMode;
+      e.target.textContent = pickLatLngMode ? "地図をクリックしてください…" : "地図をクリックして指定";
+    });
+
+    document.getElementById("btnGeocode").addEventListener("click", async () => {
+      const addr = document.getElementById("f_address").value.trim();
+      if (!addr) { showStatus("住所を入力してください。", "err"); return; }
+      const btn = document.getElementById("btnGeocode");
+      btn.disabled = true; btn.textContent = "検索中…";
+      try {
+        const url = "https://nominatim.openstreetmap.org/search?format=json&limit=1&q=" + encodeURIComponent(addr + " 長野県");
+        const resp = await fetch(url, { headers: { "Accept-Language": "ja" } });
+        const data = await resp.json();
+        if (data && data.length > 0) {
+          document.getElementById("f_lat").value = parseFloat(data[0].lat).toFixed(6);
+          document.getElementById("f_lng").value = parseFloat(data[0].lon).toFixed(6);
+          showStatus("住所から座標を取得しました。地図で位置を確認してください。", "ok");
+        } else {
+          showStatus("住所が見つかりませんでした。地図クリックか手入力で座標を指定してください。", "err");
+        }
+      } catch (err) {
+        showStatus("住所検索に失敗しました（通信エラー）。地図クリックか手入力で指定してください。", "err");
+      }
+      btn.disabled = false; btn.textContent = "住所から緯度経度を検索";
+    });
+
+    document.getElementById("btnSave").addEventListener("click", () => {
+      const name = document.getElementById("f_name").value.trim();
+      const address = document.getElementById("f_address").value.trim();
+      const lat = parseFloat(document.getElementById("f_lat").value);
+      const lng = parseFloat(document.getElementById("f_lng").value);
+      if (!name) { showStatus("医療機関名を入力してください。", "err"); return; }
+      if (isNaN(lat) || isNaN(lng)) { showStatus("緯度・経度を指定してください。", "err"); return; }
+      const funcs = {};
+      overlay.querySelectorAll("[data-fkey]").forEach(cb => { funcs[cb.getAttribute("data-fkey")] = cb.checked; });
+
+      let targetHospital;
+      if (editingId) {
+        targetHospital = hospitals.find(x => x.id === editingId);
+        Object.assign(targetHospital, { name, address, lat, lng, funcs, approx: false });
+      } else {
+        targetHospital = { id: "h_" + Date.now(), name, address, lat, lng, funcs, approx: false };
+        hospitals.push(targetHospital);
+      }
+      renderAll();
+      pickLatLngMode = false;
+      overlay.remove();
+
+      if (useApi) {
+        apiUpsert(targetHospital)
+          .then(() => showStatus("スプレッドシートに保存しました。", "ok"))
+          .catch(err => showStatus("保存の同期に失敗しました: " + err.message, "err"));
+      } else {
+        saveData();
+        showStatus("保存しました。", "ok");
+      }
+    });
+  }
+
+  document.getElementById("btnAddNew").addEventListener("click", () => openEditModal(null));
+
+  // ---------- 同心円コントロールの変更監視 ----------
+  ["circleCenterSelect", "circleInterval", "circleCount", "circleToggle"].forEach(id => {
+    document.getElementById(id).addEventListener("change", renderCircles);
+    document.getElementById(id).addEventListener("input", renderCircles);
+  });
+
+  // ---------- Excel取込 ----------
+  document.getElementById("btnImport").addEventListener("click", () => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".xlsx,.xls";
+    input.onchange = async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type: "array" });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
+      // ヘッダー行を探す（「医療機関名」を含む行）
+      let headerIdx = rows.findIndex(r => r.some(c => String(c).includes("医療機関名")));
+      if (headerIdx === -1) headerIdx = 0;
+      const header = rows[headerIdx].map(c => String(c).trim());
+      const nameCol = header.findIndex(c => c.includes("医療機関名"));
+      const addrCol = header.findIndex(c => c.includes("住所"));
+      const funcCols = {};
+      FUNC_KEYS.forEach(k => {
+        const idx = header.findIndex(c => c === k);
+        if (idx !== -1) funcCols[k] = idx;
+      });
+      if (nameCol === -1) { showStatus("「医療機関名」列が見つかりませんでした。", "err"); return; }
+
+      const dataRows = rows.slice(headerIdx + 1).filter(r => r[nameCol] && String(r[nameCol]).trim());
+      showStatus(`${dataRows.length}件を取込中…（住所から座標を検索しています）`, "info");
+
+      let added = 0, failed = 0;
+      for (const r of dataRows) {
+        const name = String(r[nameCol]).trim();
+        const address = addrCol !== -1 ? String(r[addrCol] || "").trim() : "";
+        if (hospitals.some(h => h.name === name)) continue; // 重複スキップ
+        const funcs = {};
+        FUNC_KEYS.forEach(k => {
+          const idx = funcCols[k];
+          funcs[k] = idx !== undefined && String(r[idx] || "").trim() !== "";
+        });
+        let lat = null, lng = null, approx = true;
+        if (address) {
+          try {
+            const url = "https://nominatim.openstreetmap.org/search?format=json&limit=1&q=" + encodeURIComponent(address + " 長野県");
+            const resp = await fetch(url, { headers: { "Accept-Language": "ja" } });
+            const geo = await resp.json();
+            if (geo && geo.length > 0) { lat = parseFloat(geo[0].lat); lng = parseFloat(geo[0].lon); approx = false; }
+            await new Promise(res => setTimeout(res, 1100)); // Nominatim利用ポリシーに配慮したレート制限
+          } catch (err) { /* ignore, fallback below */ }
+        }
+        if (lat === null) { lat = CENTER_DEFAULT.lat; lng = CENTER_DEFAULT.lng; failed++; }
+        const newHospital = { id: "h_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7), name, address, lat, lng, funcs, approx };
+        hospitals.push(newHospital);
+        if (useApi) {
+          try { await apiUpsert(newHospital); } catch (err) { showStatus("「" + name + "」の同期に失敗しました。", "err"); }
+        }
+        added++;
+      }
+      if (!useApi) await saveData();
+      renderAll();
+      showStatus(`取込完了：${added}件追加${failed > 0 ? `（うち${failed}件は座標未特定のため長野中央病院の位置に仮配置。編集画面で修正してください）` : ""}`, failed > 0 ? "err" : "ok");
+    };
+    input.click();
+  });
+
+  // ---------- Excel書き出し ----------
+  document.getElementById("btnExport").addEventListener("click", () => {
+    const header = ["医療機関名", "住所", ...FUNC_KEYS, "緯度", "経度"];
+    const rows = hospitals.map(h => [
+      h.name, h.address || "",
+      ...FUNC_KEYS.map(k => h.funcs[k] ? "〇" : ""),
+      h.lat, h.lng
+    ]);
+    const ws = XLSX.utils.aoa_to_sheet([header, ...rows]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "医療機関一覧");
+    XLSX.writeFile(wb, "長野市医療機関一覧.xlsx");
+  });
+
+  // ---------- 共有モード：更新ボタン＆自動更新 ----------
+  if (useApi) {
+    const refreshBtn = document.getElementById("btnRefresh");
+    refreshBtn.style.display = "";
+    refreshBtn.addEventListener("click", () => loadData(true));
+    setInterval(() => loadData(true), AUTO_REFRESH_MS);
+    document.getElementById("subTitle").textContent += "／ 共有モード（スプレッドシート連携・自動更新あり）";
+  }
+
+  // ---------- 初期ロード ----------
+  loadData();
+
+})();
+</script>
+</body>
+</html>
