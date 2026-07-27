@@ -301,6 +301,47 @@
     }
   });
 
+  // ダブルクリック地点の座標・施設名・住所を自動取得して追加フォームを開く
+  map.doubleClickZoom.disable(); // ダブルクリックによるズームは無効化（追加操作を優先）
+  map.on("dblclick", async (e) => {
+    const lat = e.latlng.lat;
+    const lng = e.latlng.lng;
+    showStatus("この地点の住所・施設名を検索中…", "info");
+    const guess = await reverseGeocodeGuess(lat, lng);
+    openEditModal(null, {
+      lat: lat.toFixed(6),
+      lng: lng.toFixed(6),
+      name: guess.name,
+      address: guess.address
+    });
+    if (guess.name) showStatus("施設名を自動推定しました。内容を確認して保存してください。", "ok");
+    else showStatus("座標を自動入力しました。施設名は手入力してください。", "info");
+  });
+
+  // 逆ジオコーディング（座標→施設名・住所の推定）。OpenStreetMapに地物として
+  // 登録されている場合のみ施設名が取得できます。取得できない場合は空文字を返します。
+  async function reverseGeocodeGuess(lat, lng) {
+    try {
+      const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1&accept-language=ja`;
+      const resp = await fetch(url, { headers: { "Accept-Language": "ja" } });
+      const data = await resp.json();
+      let name = "";
+      if (data && data.name) name = data.name;
+      else if (data && data.namedetails && data.namedetails.name) name = data.namedetails.name;
+      let address = "";
+      if (data && data.address) {
+        const a = data.address;
+        address = [
+          a.state || "", a.city || a.town || a.county || "",
+          a.suburb || a.neighbourhood || "", a.road || "", a.house_number || ""
+        ].filter(Boolean).join("");
+      }
+      return { name, address };
+    } catch (err) {
+      return { name: "", address: "" };
+    }
+  }
+
   // ---------- マーカー描画（機能円グラフアイコン） ----------
   function buildPieGradient(funcsObj) {
     const active = FUNCS.filter(f => funcsObj[f.key]);
@@ -544,8 +585,12 @@
   }
 
   // ---------- 追加/編集モーダル ----------
-  function openEditModal(hospital) {
+  function openEditModal(hospital, prefill) {
     editingId = hospital ? hospital.id : null;
+    const initName = hospital ? hospital.name : ((prefill && prefill.name) || "");
+    const initAddress = hospital ? (hospital.address || "") : ((prefill && prefill.address) || "");
+    const initLat = hospital ? hospital.lat : ((prefill && prefill.lat !== undefined) ? prefill.lat : "");
+    const initLng = hospital ? hospital.lng : ((prefill && prefill.lng !== undefined) ? prefill.lng : "");
     const overlay = document.createElement("div");
     overlay.className = "modal-overlay";
     const checkboxesHtml = FUNCS.map(f => `
@@ -555,14 +600,14 @@
     overlay.innerHTML = `
       <div class="modal-box">
         <h3>${hospital ? "医療機関を編集" : "医療機関を追加"}</h3>
-        <div class="hint-pin">緯度・経度は「地図をクリックして指定」ボタンを押してから地図上の位置をクリックすると自動入力されます。住所検索も利用できます。</div>
-        <div class="field"><label>医療機関名</label><input type="text" id="f_name" value="${hospital ? hospital.name : ""}" /></div>
-        <div class="field"><label>住所</label><input type="text" id="f_address" value="${hospital ? (hospital.address || "") : ""}" /></div>
+        <div class="hint-pin">緯度・経度は「地図をクリックして指定」ボタンを押してから地図上の位置をクリックすると自動入力されます。住所検索も利用できます。地図をダブルクリックすると、その地点の座標付きでこのフォームが開きます。</div>
+        <div class="field"><label>医療機関名</label><input type="text" id="f_name" value="${initName}" /></div>
+        <div class="field"><label>住所</label><input type="text" id="f_address" value="${initAddress}" /></div>
         <div class="row-flex" style="margin-bottom:6px;">
           <button class="btn secondary" id="btnGeocode" style="flex:1;">住所から緯度経度を検索</button>
         </div>
-        <div class="field"><label>緯度 (lat)</label><input type="text" id="f_lat" value="${hospital ? hospital.lat : ""}" /></div>
-        <div class="field"><label>経度 (lng)</label><input type="text" id="f_lng" value="${hospital ? hospital.lng : ""}" /></div>
+        <div class="field"><label>緯度 (lat)</label><input type="text" id="f_lat" value="${initLat}" /></div>
+        <div class="field"><label>経度 (lng)</label><input type="text" id="f_lng" value="${initLng}" /></div>
         <button class="btn secondary" id="btnPickOnMap" style="width:100%;margin-bottom:8px;">地図をクリックして指定</button>
         <div class="field">
           <label>機能（複数選択可）</label>
