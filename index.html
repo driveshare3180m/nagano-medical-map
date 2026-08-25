@@ -149,7 +149,7 @@
   .hosp-marker-inner {
     width: 26px; height: 26px; border-radius: 50%;
     border: 2px solid #fff;
-    box-shadow: 0 1px 4px rgba(0,0,0,0.4);
+    box-shadow: 0 1px 5px rgba(0,0,0,0.55);
     position: relative;
     display: flex; align-items: center; justify-content: center;
   }
@@ -216,38 +216,71 @@
     { key: "療養病床", color: "#f4a261" },
     { key: "精神病床", color: "#6a4c93" }
   ];
-  // 病床機能報告区分（重複なく合計可能な、病床種別とは別の分類軸）
+  // 病床機能報告区分（入力・保存の対象は以下4区分）
   const BED_FUNCTION_FUNCS = [
     { key: "高度急性期", color: "#c0392b" },
     { key: "急性期", color: "#e76f51" },
     { key: "回復期", color: "#457b9d" },
     { key: "慢性期", color: "#8e44ad" }
   ];
+  // 病床機能報告の表示用（精神病床など機能報告の対象外病床を「その他」として自動算出し追加）
+  const OTHER_FUNC = { key: "その他", color: "#95a5a6" };
+  const BED_FUNCTION_DISPLAY_FUNCS = [...BED_FUNCTION_FUNCS, OTHER_FUNC];
+  const BED_FUNCTION_DISPLAY_KEYS = BED_FUNCTION_DISPLAY_FUNCS.map(f => f.key);
   // 救急告示区分（病床数ではなく該当有無のフラグ）
   const EMERGENCY_FUNCS = [
     { key: "救急告示", color: "#d62839" },
     { key: "二次救急（病院群輪番制）", color: "#f77f00" },
     { key: "三次救急", color: "#7209b7" }
   ];
-  const CLASS_GROUPS = { bedType: BED_TYPE_FUNCS, bedFunction: BED_FUNCTION_FUNCS };
   const CLASS_GROUP_LABELS = { bedType: "病床種別", bedFunction: "病床機能報告" };
   const BED_TYPE_KEYS = BED_TYPE_FUNCS.map(f => f.key);
   const BED_FUNCTION_KEYS = BED_FUNCTION_FUNCS.map(f => f.key);
   const EMERGENCY_KEYS = EMERGENCY_FUNCS.map(f => f.key);
   const CENTER_DEFAULT = { name: "長野中央病院", lat: 36.651165, lng: 138.195577 };
 
+  // 「その他」＝許可病床数から病床機能報告4区分の合計を差し引いた残り（精神病床等、機能報告の対象外分の目安）
+  function otherBedFunctionCount(h) {
+    const sum4 = BED_FUNCTION_KEYS.reduce((s, k) => s + ((h.bedFunction && h.bedFunction[k]) || 0), 0);
+    return Math.max(0, (h.licensedBeds || 0) - sum4);
+  }
+  function getBedFunctionCount(h, key) {
+    if (key === "その他") return otherBedFunctionCount(h);
+    return (h.bedFunction && h.bedFunction[key]) || 0;
+  }
+
   // 区分変更に伴い過去データは初期化（空の状態から再構築）
   const SEED_DATA = [];
 
+  // ---------- 地区別人口データの指標定義 ----------
+  const POP_METRICS = [
+    { key: "population", label: "総人口", unit: "人", type: "sequential", colorLow: "#eef3f8", colorHigh: "#08519c", getValue: d => d.population || 0 },
+    { key: "pop65", label: "65歳以上人口", unit: "人", type: "sequential", colorLow: "#f5eef8", colorHigh: "#6a1b9a", getValue: d => d.pop65 || 0 },
+    { key: "pop75", label: "75歳以上人口", unit: "人", type: "sequential", colorLow: "#fdf2e9", colorHigh: "#a04000", getValue: d => d.pop75 || 0 },
+    { key: "agingRate", label: "高齢化率", unit: "%", type: "sequential", colorLow: "#fff5e6", colorHigh: "#cc4c02", getValue: d => districtAgingRate(d) },
+    { key: "changeRate2025", label: "人口増減率（2020→2025）", unit: "%", type: "diverging", getValue: d => d.changeRate2025 || 0 },
+    { key: "naturalChange", label: "自然増減", unit: "人", type: "diverging", getValue: d => d.naturalChange || 0 },
+    { key: "socialChange", label: "社会増減", unit: "人", type: "diverging", getValue: d => d.socialChange || 0 }
+  ];
+  function districtAgingRate(d) {
+    if (!d.population || d.population <= 0) return 0;
+    return Math.round(((d.pop65 || 0) / d.population) * 1000) / 10;
+  }
+
   // ---------- 状態 ----------
   let hospitals = [];
-  let mapClassification = "bedType"; // 地図の色分け・集計に使う分類軸（bedType / bedFunction）
+  let districts = [];
+  let mapClassification = "bedFunction"; // 地図の色分け・集計に使う分類軸（bedType / bedFunction）
   let activeBedType = new Set(BED_TYPE_KEYS);
-  let activeBedFunction = new Set(BED_FUNCTION_KEYS);
+  let activeBedFunction = new Set(BED_FUNCTION_DISPLAY_KEYS);
   let activeEmergency = new Set(EMERGENCY_KEYS);
-  let map, markersLayer, circlesLayer;
+  let popLayerVisible = false;
+  let popMetric = "population";
+  let map, markersLayer, circlesLayer, populationLayer;
   let editingId = null; // 編集中の病院ID（nullなら新規）
+  let editingDistrictId = null; // 編集中の地区ID（nullなら新規）
   let pickLatLngMode = false;
+  let pickTarget = "hospital"; // "hospital" または "district"
 
   const root = document.getElementById("app-root");
 
@@ -269,10 +302,8 @@
       <div class="sidebar">
 
         <div class="panel">
-          <h2>地図の色分け・集計基準</h2>
-          <label class="func-row"><input type="radio" name="mapClass" value="bedType" checked /> 病床種別</label>
-          <label class="func-row"><input type="radio" name="mapClass" value="bedFunction" /> 病床機能報告</label>
-          <div class="small-note">選んだ分類の病床数がマーカーの色・数字に反映されます。</div>
+          <h2>地図の色分け・数字表示</h2>
+          <div class="small-note">マーカーの色・数字・円の大きさは「病床機能報告」（高度急性期／急性期／回復期／慢性期／その他）＋許可病床数に基づいて表示されます。</div>
         </div>
 
         <div class="panel">
@@ -305,13 +336,41 @@
             <input type="number" id="circleCount" value="4" min="1" max="15" step="1" />
           </div>
           <label style="font-size:12px; display:flex; align-items:center; gap:6px; cursor:pointer;">
-            <input type="checkbox" id="circleToggle" checked /> 同心円を表示する
+            <input type="checkbox" id="circleToggle" /> 同心円を表示する
           </label>
         </div>
 
         <div class="panel">
           <h2>医療機関一覧 (<span id="hospCount">0</span>件)</h2>
           <div id="hospitalList"></div>
+        </div>
+
+        <div class="panel">
+          <h2>地区別人口データ</h2>
+          <label style="font-size:12px; display:flex; align-items:center; gap:6px; cursor:pointer; margin-bottom:6px;">
+            <input type="checkbox" id="popLayerToggle" /> 人口レイヤーを表示する
+          </label>
+          <div class="field">
+            <label>表示する指標</label>
+            <select id="popMetricSelect">
+              <option value="population">総人口</option>
+              <option value="pop65">65歳以上人口</option>
+              <option value="pop75">75歳以上人口</option>
+              <option value="agingRate">高齢化率</option>
+              <option value="changeRate2025">人口増減率（2020→2025）</option>
+              <option value="naturalChange">自然増減</option>
+              <option value="socialChange">社会増減（転入超過＋／転出超過－）</option>
+            </select>
+          </div>
+          <div id="popLegend" class="small-note"></div>
+          <div class="divider"></div>
+          <div class="row-flex" style="gap:6px; margin-bottom:6px;">
+            <button class="btn secondary" id="btnImportPop" style="flex:1;">Excel取込</button>
+            <button class="btn secondary" id="btnExportPop" style="flex:1;">書き出し</button>
+          </div>
+          <button class="btn" id="btnAddDistrict" style="width:100%;margin-bottom:8px;">＋ 地区を追加</button>
+          <div class="small-note">正式な地区境界データが無いため、円は地区の代表地点を示す簡易表示です（境界データが入手でき次第、正確な塗り分けに差し替え可能です）。</div>
+          <div id="districtList" style="margin-top:8px;"></div>
         </div>
 
         <div id="statusArea"></div>
@@ -339,34 +398,30 @@
     });
   }
   buildFilterGroup("bedTypeFilterList", BED_TYPE_FUNCS, activeBedType, true);
-  buildFilterGroup("bedFunctionFilterList", BED_FUNCTION_FUNCS, activeBedFunction, true);
+  buildFilterGroup("bedFunctionFilterList", BED_FUNCTION_DISPLAY_FUNCS, activeBedFunction, true);
   buildFilterGroup("emergencyFilterList", EMERGENCY_FUNCS, activeEmergency, true);
-
-  document.querySelectorAll('input[name="mapClass"]').forEach(radio => {
-    radio.addEventListener("change", (e) => {
-      if (e.target.checked) {
-        mapClassification = e.target.value;
-        renderMarkers();
-      }
-    });
-  });
 
   // ---------- 地図初期化 ----------
   map = L.map("map", { zoomControl: true }).setView([CENTER_DEFAULT.lat, CENTER_DEFAULT.lng], 12);
-  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
     maxZoom: 19,
-    attribution: "&copy; OpenStreetMap contributors"
+    attribution: "&copy; OpenStreetMap contributors &copy; CARTO"
   }).addTo(map);
   L.control.scale({ metric: true, imperial: false, position: "bottomleft" }).addTo(map);
   markersLayer = L.layerGroup().addTo(map);
   circlesLayer = L.layerGroup().addTo(map);
+  populationLayer = L.layerGroup().addTo(map);
 
   map.on("click", (e) => {
     if (pickLatLngMode) {
-      document.getElementById("f_lat").value = e.latlng.lat.toFixed(6);
-      document.getElementById("f_lng").value = e.latlng.lng.toFixed(6);
+      const latId = pickTarget === "district" ? "d_lat" : "f_lat";
+      const lngId = pickTarget === "district" ? "d_lng" : "f_lng";
+      const btnId = pickTarget === "district" ? "btnPickOnMapDistrict" : "btnPickOnMap";
+      document.getElementById(latId).value = e.latlng.lat.toFixed(6);
+      document.getElementById(lngId).value = e.latlng.lng.toFixed(6);
       pickLatLngMode = false;
-      document.getElementById("btnPickOnMap").textContent = "地図をクリックして指定";
+      const btn = document.getElementById(btnId);
+      if (btn) btn.textContent = "地図をクリックして指定";
       showStatus("地図上の位置を取得しました。", "ok");
     }
   });
@@ -415,14 +470,19 @@
   // ---------- マーカー描画（分類軸ごとの円グラフ＋数字＋救急バッジ） ----------
   function getVisibleBedEntries(h) {
     // 現在の「地図の色分け・集計基準」（病床種別/病床機能報告）に応じた病床エントリを返す
-    const funcs = CLASS_GROUPS[mapClassification];
-    const activeSet = mapClassification === "bedType" ? activeBedType : activeBedFunction;
-    const bedsObj = mapClassification === "bedType" ? h.bedType : h.bedFunction;
-    const allSelected = activeSet.size === funcs.length;
-    return funcs.filter(f => {
-      const count = (bedsObj && bedsObj[f.key]) || 0;
-      return count > 0 && (allSelected || activeSet.has(f.key));
-    }).map(f => ({ key: f.key, color: f.color, count: (bedsObj && bedsObj[f.key]) || 0 }));
+    if (mapClassification === "bedType") {
+      const allSelected = activeBedType.size === BED_TYPE_KEYS.length;
+      return BED_TYPE_FUNCS.filter(f => {
+        const count = (h.bedType && h.bedType[f.key]) || 0;
+        return count > 0 && (allSelected || activeBedType.has(f.key));
+      }).map(f => ({ key: f.key, color: f.color, count: (h.bedType && h.bedType[f.key]) || 0 }));
+    } else {
+      const allSelected = activeBedFunction.size === BED_FUNCTION_DISPLAY_KEYS.length;
+      return BED_FUNCTION_DISPLAY_FUNCS.filter(f => {
+        const count = getBedFunctionCount(h, f.key);
+        return count > 0 && (allSelected || activeBedFunction.has(f.key));
+      }).map(f => ({ key: f.key, color: f.color, count: getBedFunctionCount(h, f.key) }));
+    }
   }
 
   function buildPieGradient(entries) {
@@ -446,9 +506,9 @@
     return BED_TYPE_KEYS.some(k => activeBedType.has(k) && (h.bedType && h.bedType[k]) > 0);
   }
   function bedFunctionMatches(h) {
-    const allSelected = activeBedFunction.size === BED_FUNCTION_KEYS.length;
+    const allSelected = activeBedFunction.size === BED_FUNCTION_DISPLAY_KEYS.length;
     if (allSelected) return true;
-    return BED_FUNCTION_KEYS.some(k => activeBedFunction.has(k) && (h.bedFunction && h.bedFunction[k]) > 0);
+    return BED_FUNCTION_DISPLAY_KEYS.some(k => activeBedFunction.has(k) && getBedFunctionCount(h, k) > 0);
   }
   function emergencyMatches(h) {
     const allSelected = activeEmergency.size === EMERGENCY_KEYS.length;
@@ -473,25 +533,28 @@
       const emergencyBadges = EMERGENCY_FUNCS.filter(f => h.emergency && h.emergency[f.key])
         .map(f => `<span class="bed-chip" style="background:${f.color};">${f.key === "救急告示" ? "救急" : (f.key === "三次救急" ? "3次" : "2次")}</span>`)
         .join("");
+      // 円のサイズは許可病床数に比例（面積が概ね比例するよう平方根でスケーリング）
+      const diameter = Math.round(Math.min(64, Math.max(22, 14 + Math.sqrt(Math.max(h.licensedBeds || 0, 0)) * 2.6)));
+      const fontSize = diameter >= 40 ? 12 : (diameter >= 28 ? 10 : 8);
       const icon = L.divIcon({
         className: "hosp-marker",
         html: `<div>
-                 <div class="hosp-marker-inner" style="background:${bg}">
-                   <span class="hosp-marker-total">${totalBeds || ""}</span>
+                 <div class="hosp-marker-inner" style="background:${bg};width:${diameter}px;height:${diameter}px;">
+                   <span class="hosp-marker-total" style="font-size:${fontSize}px;">${totalBeds || ""}</span>
                  </div>
                  <div class="hosp-marker-label">${h.name}</div>
                  <div class="hosp-marker-chips">${chipsHtml}</div>
                  ${emergencyBadges ? `<div class="hosp-marker-chips">${emergencyBadges}</div>` : ""}
                </div>`,
-        iconSize: [26, 68],
-        iconAnchor: [13, 13]
+        iconSize: [Math.max(diameter, 60), diameter + 42],
+        iconAnchor: [Math.max(diameter, 60) / 2, diameter / 2]
       });
       const marker = L.marker([h.lat, h.lng], { icon });
 
       const bedTypeTags = BED_TYPE_FUNCS.filter(f => (h.bedType && h.bedType[f.key]) > 0)
         .map(f => `<span style="background:${f.color};color:#fff;padding:1px 6px;border-radius:8px;font-size:10px;">${f.key} ${h.bedType[f.key]}床</span>`).join(" ");
-      const bedFunctionTags = BED_FUNCTION_FUNCS.filter(f => (h.bedFunction && h.bedFunction[f.key]) > 0)
-        .map(f => `<span style="background:${f.color};color:#fff;padding:1px 6px;border-radius:8px;font-size:10px;">${f.key} ${h.bedFunction[f.key]}床</span>`).join(" ");
+      const bedFunctionTags = BED_FUNCTION_DISPLAY_FUNCS.filter(f => getBedFunctionCount(h, f.key) > 0)
+        .map(f => `<span style="background:${f.color};color:#fff;padding:1px 6px;border-radius:8px;font-size:10px;">${f.key} ${getBedFunctionCount(h, f.key)}床</span>`).join(" ");
       const emergencyTags = EMERGENCY_FUNCS.filter(f => h.emergency && h.emergency[f.key])
         .map(f => `<span style="background:${f.color};color:#fff;padding:1px 6px;border-radius:8px;font-size:10px;">${f.key}</span>`).join(" ");
 
@@ -533,7 +596,6 @@
         fillOpacity: 0,
         dashArray: "4,4"
       });
-      circle.bindTooltip(`${(interval * i).toFixed(1)}km`, { permanent: true, direction: "right", className: "", opacity: 0.8 });
       circle.addTo(circlesLayer);
     }
     L.circleMarker([center.lat, center.lng], { radius: 4, color: "#3f6b4e", fillColor: "#3f6b4e", fillOpacity: 1 })
@@ -559,8 +621,8 @@
       div.className = "hospital-item";
       const bedTypeTags = BED_TYPE_FUNCS.filter(f => (h.bedType && h.bedType[f.key]) > 0)
         .map(f => `<span class="tag" style="background:${f.color}">${f.key} ${h.bedType[f.key]}床</span>`).join("");
-      const bedFunctionTags = BED_FUNCTION_FUNCS.filter(f => (h.bedFunction && h.bedFunction[f.key]) > 0)
-        .map(f => `<span class="tag" style="background:${f.color}">${f.key} ${h.bedFunction[f.key]}床</span>`).join("");
+      const bedFunctionTags = BED_FUNCTION_DISPLAY_FUNCS.filter(f => getBedFunctionCount(h, f.key) > 0)
+        .map(f => `<span class="tag" style="background:${f.color}">${f.key} ${getBedFunctionCount(h, f.key)}床</span>`).join("");
       const emergencyTags = EMERGENCY_FUNCS.filter(f => h.emergency && h.emergency[f.key])
         .map(f => `<span class="tag" style="background:${f.color}">${f.key}</span>`).join("");
       div.innerHTML = `
@@ -606,6 +668,124 @@
     refreshCenterSelect();
     renderCircles();
     renderList();
+    renderPopulationLayer();
+    renderDistrictList();
+  }
+
+  // ---------- 色計算ヘルパー ----------
+  function hexToRgb(hex) {
+    const m = hex.replace("#", "");
+    return { r: parseInt(m.substring(0, 2), 16), g: parseInt(m.substring(2, 4), 16), b: parseInt(m.substring(4, 6), 16) };
+  }
+  function lerpColor(hex1, hex2, t) {
+    const c1 = hexToRgb(hex1), c2 = hexToRgb(hex2);
+    const r = Math.round(c1.r + (c2.r - c1.r) * t);
+    const g = Math.round(c1.g + (c2.g - c1.g) * t);
+    const b = Math.round(c1.b + (c2.b - c1.b) * t);
+    return `rgb(${r},${g},${b})`;
+  }
+  function sequentialColor(value, min, max, colorLow, colorHigh) {
+    if (max === min) return colorLow;
+    const t = Math.max(0, Math.min(1, (value - min) / (max - min)));
+    return lerpColor(colorLow, colorHigh, t);
+  }
+  function divergingColor(value, maxAbs) {
+    if (maxAbs === 0) return "#eeeeee";
+    const t = Math.max(-1, Math.min(1, value / maxAbs));
+    return t >= 0 ? lerpColor("#f5f5f5", "#2166ac", t) : lerpColor("#f5f5f5", "#b2182b", -t);
+  }
+
+  // ---------- 人口レイヤー描画 ----------
+  function renderPopulationLayer() {
+    populationLayer.clearLayers();
+    document.getElementById("popLegend").innerHTML = "";
+    if (!popLayerVisible || districts.length === 0) return;
+    const metric = POP_METRICS.find(m => m.key === popMetric);
+    const values = districts.map(d => metric.getValue(d));
+    const min = Math.min(...values, 0);
+    const max = Math.max(...values, 0);
+    const maxAbs = Math.max(...values.map(v => Math.abs(v)), 1);
+
+    districts.forEach(d => {
+      const val = metric.getValue(d);
+      const color = metric.type === "diverging" ? divergingColor(val, maxAbs) : sequentialColor(val, min, max, metric.colorLow, metric.colorHigh);
+      const circle = L.circle([d.lat, d.lng], { radius: 1300, color: "#666", weight: 1, fillColor: color, fillOpacity: 0.62 });
+      const valDisp = metric.unit === "%" ? val.toFixed(1) : Math.round(val);
+      circle.bindPopup(`<div style="font-size:12.5px;min-width:170px;">
+          <div style="font-weight:700;margin-bottom:3px;">${d.name}</div>
+          <div style="font-size:11px;color:#555;">総人口：${d.population || 0}人</div>
+          <div style="font-size:11px;color:#555;">65歳以上：${d.pop65 || 0}人／75歳以上：${d.pop75 || 0}人</div>
+          <div style="font-size:11px;color:#555;">高齢化率：${districtAgingRate(d)}%</div>
+          <div style="font-size:11px;color:#555;">人口増減率(2020→2025)：${d.changeRate2025 || 0}%</div>
+          <div style="font-size:11px;color:#555;">自然増減：${d.naturalChange || 0}人／社会増減：${d.socialChange || 0}人（${(d.socialChange || 0) >= 0 ? "転入超過" : "転出超過"}）</div>
+          <div style="font-size:11px;color:#3f6b4e;margin-top:4px;">表示中の指標「${metric.label}」：${valDisp}${metric.unit}</div>
+        </div>`);
+      circle.addTo(populationLayer);
+      const label = L.marker([d.lat, d.lng], {
+        icon: L.divIcon({
+          className: "",
+          html: `<div style="font-size:10px;font-weight:700;color:#222;text-shadow:0 0 3px #fff,0 0 3px #fff,0 0 3px #fff;text-align:center;white-space:nowrap;">${d.name}</div>`,
+          iconSize: [120, 16],
+          iconAnchor: [60, 8]
+        })
+      });
+      label.addTo(populationLayer);
+    });
+
+    const legend = document.getElementById("popLegend");
+    if (metric.type === "diverging") {
+      legend.innerHTML = `<div style="height:10px;border-radius:3px;background:linear-gradient(to right, ${lerpColor("#f5f5f5", "#b2182b", 1)}, #f5f5f5, ${lerpColor("#f5f5f5", "#2166ac", 1)});"></div>
+        <div style="display:flex;justify-content:space-between;margin-top:2px;"><span>-${maxAbs}${metric.unit}</span><span>0</span><span>+${maxAbs}${metric.unit}</span></div>`;
+    } else {
+      legend.innerHTML = `<div style="height:10px;border-radius:3px;background:linear-gradient(to right, ${metric.colorLow}, ${metric.colorHigh});"></div>
+        <div style="display:flex;justify-content:space-between;margin-top:2px;"><span>${min}${metric.unit}</span><span>${max}${metric.unit}</span></div>`;
+    }
+  }
+
+  // ---------- 地区一覧描画 ----------
+  function renderDistrictList() {
+    const listEl = document.getElementById("districtList");
+    listEl.innerHTML = "";
+    districts.forEach(d => {
+      const div = document.createElement("div");
+      div.className = "hospital-item";
+      div.innerHTML = `
+        <div class="hname">${d.name}</div>
+        <div style="font-size:11px;color:#666;margin:2px 0;">
+          総人口 ${d.population || 0}人／65歳以上 ${d.pop65 || 0}人／75歳以上 ${d.pop75 || 0}人／高齢化率 ${districtAgingRate(d)}%
+        </div>
+        <div style="font-size:11px;color:#666;">
+          増減率(20→25) ${d.changeRate2025 || 0}%／自然増減 ${d.naturalChange || 0}／社会増減 ${d.socialChange || 0}
+        </div>
+        <div class="item-actions">
+          <button class="btn secondary" data-act="focus" data-id="${d.id}">地図で見る</button>
+          <button class="btn secondary" data-act="edit" data-id="${d.id}">編集</button>
+          <button class="btn danger" data-act="del" data-id="${d.id}">削除</button>
+        </div>
+      `;
+      listEl.appendChild(div);
+    });
+    listEl.querySelectorAll("button").forEach(btn => {
+      btn.addEventListener("click", (e) => {
+        const id = e.target.getAttribute("data-id");
+        const act = e.target.getAttribute("data-act");
+        const d = districts.find(x => x.id === id);
+        if (!d) return;
+        if (act === "focus") { map.setView([d.lat, d.lng], 13); }
+        if (act === "edit") { openDistrictModal(d); }
+        if (act === "del") {
+          if (confirm(`「${d.name}」を削除しますか？`)) {
+            districts = districts.filter(x => x.id !== id);
+            renderAll();
+            if (useApi) {
+              apiDeleteDistrict(id).catch(err => showStatus("削除の同期に失敗しました: " + err.message, "err"));
+            } else {
+              saveData();
+            }
+          }
+        }
+      });
+    });
   }
 
   // ---------- API連携（Google Sheets + Apps Script）----------
@@ -619,7 +799,7 @@
     const res = await fetch(API_URL, { method: "GET" });
     const json = await res.json();
     if (json.status !== "ok") throw new Error(json.message || "API error");
-    return json.hospitals || [];
+    return { hospitals: json.hospitals || [], districts: json.districts || [] };
   }
   async function apiUpsert(hospital) {
     const res = await fetch(API_URL, {
@@ -639,23 +819,44 @@
     const json = await res.json();
     if (json.status !== "ok") throw new Error(json.message || "API error");
   }
+  async function apiUpsertDistrict(district) {
+    const res = await fetch(API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({ action: "upsertDistrict", district })
+    });
+    const json = await res.json();
+    if (json.status !== "ok") throw new Error(json.message || "API error");
+  }
+  async function apiDeleteDistrict(id) {
+    const res = await fetch(API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({ action: "deleteDistrict", id })
+    });
+    const json = await res.json();
+    if (json.status !== "ok") throw new Error(json.message || "API error");
+  }
 
   // ---------- 永続化 ----------
   // Claude.aiのartifact内ではwindow.storage（アカウント紐づけの永続保存）を使い、
   // それ以外の環境（Cloudflare Workers / GitHub Pages等にデプロイした場合）では
   // ブラウザのlocalStorage（この端末・このブラウザにのみ保存）に自動的に切り替わります。
   const STORAGE_KEY = "nagano_medical_hospitals_v2"; // 区分スキーマ変更のためv2に更新（旧データは読み込まれません）
+  const DISTRICT_STORAGE_KEY = "nagano_medical_districts_v1";
   const hasClaudeStorage = (typeof window.storage !== "undefined" && window.storage && typeof window.storage.get === "function");
 
   // saveData()は「APIモードではない場合のみ」ブラウザ内保存を行います。
-  // APIモード時は各操作（追加/編集/削除）の箇所で個別にapiUpsert/apiDeleteを呼びます。
+  // APIモード時は各操作（追加/編集/削除）の箇所で個別にapiUpsert/apiDelete等を呼びます。
   async function saveData() {
     if (useApi) return;
     try {
       if (hasClaudeStorage) {
         await window.storage.set(STORAGE_KEY, JSON.stringify(hospitals), false);
+        await window.storage.set(DISTRICT_STORAGE_KEY, JSON.stringify(districts), false);
       } else {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(hospitals));
+        localStorage.setItem(DISTRICT_STORAGE_KEY, JSON.stringify(districts));
       }
     } catch (err) {
       console.error("保存エラー", err);
@@ -666,34 +867,42 @@
   async function loadData(isRefresh) {
     try {
       if (useApi) {
-        hospitals = await apiGetAll();
+        const result = await apiGetAll();
+        hospitals = result.hospitals;
+        districts = result.districts;
         if (!isRefresh) showStatus("スプレッドシートから読み込みました（共有モード）。", "info");
       } else if (hasClaudeStorage) {
         const res = await window.storage.get(STORAGE_KEY, false);
+        const dres = await window.storage.get(DISTRICT_STORAGE_KEY, false).catch(() => null);
         if (res && res.value) {
           hospitals = JSON.parse(res.value);
           showStatus("保存済みデータを読み込みました。", "info");
         } else {
           hospitals = SEED_DATA.slice();
-          await saveData();
         }
+        districts = (dres && dres.value) ? JSON.parse(dres.value) : [];
+        await saveData();
       } else {
         const raw = localStorage.getItem(STORAGE_KEY);
+        const draw = localStorage.getItem(DISTRICT_STORAGE_KEY);
         if (raw) {
           hospitals = JSON.parse(raw);
           showStatus("この端末に保存済みのデータを読み込みました。", "info");
         } else {
           hospitals = SEED_DATA.slice();
-          await saveData();
         }
+        districts = draw ? JSON.parse(draw) : [];
+        await saveData();
       }
     } catch (err) {
       console.error(err);
       if (useApi) {
         showStatus("スプレッドシートへの接続に失敗しました。API_URLの設定を確認してください。", "err");
         if (!hospitals || hospitals.length === 0) hospitals = SEED_DATA.slice();
+        if (!districts) districts = [];
       } else {
         hospitals = SEED_DATA.slice();
+        districts = [];
       }
     }
     renderAll();
@@ -777,6 +986,7 @@
 
     document.getElementById("btnCancel").addEventListener("click", () => { pickLatLngMode = false; overlay.remove(); });
     document.getElementById("btnPickOnMap").addEventListener("click", (e) => {
+      pickTarget = "hospital";
       pickLatLngMode = !pickLatLngMode;
       e.target.textContent = pickLatLngMode ? "地図をクリックしてください…" : "地図をクリックして指定";
     });
@@ -850,6 +1060,168 @@
   }
 
   document.getElementById("btnAddNew").addEventListener("click", () => openEditModal(null));
+
+  // ---------- 地区（人口データ）の追加・編集モーダル ----------
+  function openDistrictModal(district) {
+    editingDistrictId = district ? district.id : null;
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+    overlay.innerHTML = `
+      <div class="modal-box">
+        <h3>${district ? "地区を編集" : "地区を追加"}</h3>
+        <div class="hint-pin">緯度・経度は「地図をクリックして指定」ボタンを押してから地図上の代表地点をクリックすると自動入力されます。</div>
+        <div class="field"><label>地区名</label><input type="text" id="d_name" value="${district ? district.name : ""}" /></div>
+        <div class="field"><label>緯度 (lat)</label><input type="text" id="d_lat" value="${district ? district.lat : ""}" /></div>
+        <div class="field"><label>経度 (lng)</label><input type="text" id="d_lng" value="${district ? district.lng : ""}" /></div>
+        <button class="btn secondary" id="btnPickOnMapDistrict" style="width:100%;margin-bottom:8px;">地図をクリックして指定</button>
+        <div class="field"><label>総人口</label><input type="number" min="0" step="1" id="d_population" value="${district ? (district.population || 0) : 0}" /></div>
+        <div class="field"><label>65歳以上人口</label><input type="number" min="0" step="1" id="d_pop65" value="${district ? (district.pop65 || 0) : 0}" /></div>
+        <div class="field"><label>75歳以上人口</label><input type="number" min="0" step="1" id="d_pop75" value="${district ? (district.pop75 || 0) : 0}" /></div>
+        <div class="small-note" style="margin-bottom:8px;">高齢化率は総人口・65歳以上人口から自動計算されます。</div>
+        <div class="field"><label>人口増減率（2020→2025、%）</label><input type="number" step="0.1" id="d_changeRate" value="${district ? (district.changeRate2025 || 0) : 0}" /></div>
+        <div class="field"><label>自然増減（人）</label><input type="number" step="1" id="d_natural" value="${district ? (district.naturalChange || 0) : 0}" /></div>
+        <div class="field"><label>社会増減（人、＋は転入超過／－は転出超過）</label><input type="number" step="1" id="d_social" value="${district ? (district.socialChange || 0) : 0}" /></div>
+        <div class="divider"></div>
+        <div class="row-flex" style="justify-content:flex-end;gap:8px;">
+          <button class="btn secondary" id="btnCancelDistrict">キャンセル</button>
+          <button class="btn" id="btnSaveDistrict">保存</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+
+    document.getElementById("btnCancelDistrict").addEventListener("click", () => { pickLatLngMode = false; overlay.remove(); });
+    document.getElementById("btnPickOnMapDistrict").addEventListener("click", (e) => {
+      pickTarget = "district";
+      pickLatLngMode = !pickLatLngMode;
+      e.target.textContent = pickLatLngMode ? "地図をクリックしてください…" : "地図をクリックして指定";
+    });
+
+    document.getElementById("btnSaveDistrict").addEventListener("click", () => {
+      const name = document.getElementById("d_name").value.trim();
+      const lat = parseFloat(document.getElementById("d_lat").value);
+      const lng = parseFloat(document.getElementById("d_lng").value);
+      if (!name) { showStatus("地区名を入力してください。", "err"); return; }
+      if (isNaN(lat) || isNaN(lng)) { showStatus("緯度・経度を指定してください。", "err"); return; }
+      const population = parseInt(document.getElementById("d_population").value, 10) || 0;
+      const pop65 = parseInt(document.getElementById("d_pop65").value, 10) || 0;
+      const pop75 = parseInt(document.getElementById("d_pop75").value, 10) || 0;
+      const changeRate2025 = parseFloat(document.getElementById("d_changeRate").value) || 0;
+      const naturalChange = parseInt(document.getElementById("d_natural").value, 10) || 0;
+      const socialChange = parseInt(document.getElementById("d_social").value, 10) || 0;
+
+      let target;
+      if (editingDistrictId) {
+        target = districts.find(x => x.id === editingDistrictId);
+        Object.assign(target, { name, lat, lng, population, pop65, pop75, changeRate2025, naturalChange, socialChange });
+      } else {
+        target = { id: "d_" + Date.now(), name, lat, lng, population, pop65, pop75, changeRate2025, naturalChange, socialChange };
+        districts.push(target);
+      }
+      renderAll();
+      pickLatLngMode = false;
+      overlay.remove();
+
+      if (useApi) {
+        apiUpsertDistrict(target)
+          .then(() => showStatus("スプレッドシートに保存しました。", "ok"))
+          .catch(err => showStatus("保存の同期に失敗しました: " + err.message, "err"));
+      } else {
+        saveData();
+        showStatus("保存しました。", "ok");
+      }
+    });
+  }
+
+  document.getElementById("btnAddDistrict").addEventListener("click", () => openDistrictModal(null));
+
+  document.getElementById("popLayerToggle").addEventListener("change", (e) => {
+    popLayerVisible = e.target.checked;
+    renderPopulationLayer();
+  });
+  document.getElementById("popMetricSelect").addEventListener("change", (e) => {
+    popMetric = e.target.value;
+    renderPopulationLayer();
+  });
+
+  // ---------- 地区データのExcel取込・書き出し ----------
+  document.getElementById("btnImportPop").addEventListener("click", () => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".xlsx,.xls";
+    input.onchange = async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type: "array" });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
+      let headerIdx = rows.findIndex(r => r.some(c => String(c).includes("地区名")));
+      if (headerIdx === -1) headerIdx = 0;
+      const header = rows[headerIdx].map(c => String(c).trim());
+      const nameCol = header.findIndex(c => c.includes("地区名"));
+      const popCol = header.findIndex(c => c.includes("総人口"));
+      const pop65Col = header.findIndex(c => c.includes("65歳以上"));
+      const pop75Col = header.findIndex(c => c.includes("75歳以上"));
+      const changeCol = header.findIndex(c => c.includes("増減率"));
+      const naturalCol = header.findIndex(c => c.includes("自然増減"));
+      const socialCol = header.findIndex(c => c.includes("社会増減"));
+      if (nameCol === -1) { showStatus("「地区名」列が見つかりませんでした。", "err"); return; }
+
+      const dataRows = rows.slice(headerIdx + 1).filter(r => r[nameCol] && String(r[nameCol]).trim());
+      showStatus(`${dataRows.length}件を取込中…（地区名から座標を検索しています）`, "info");
+
+      function num(v) { const n = parseFloat(String(v || "").trim()); return isNaN(n) ? 0 : n; }
+
+      let added = 0, failed = 0, failedIndex = 0;
+      for (const r of dataRows) {
+        const name = String(r[nameCol]).trim();
+        if (districts.some(d => d.name === name)) continue;
+        const population = popCol !== -1 ? Math.round(num(r[popCol])) : 0;
+        const pop65 = pop65Col !== -1 ? Math.round(num(r[pop65Col])) : 0;
+        const pop75 = pop75Col !== -1 ? Math.round(num(r[pop75Col])) : 0;
+        const changeRate2025 = changeCol !== -1 ? num(r[changeCol]) : 0;
+        const naturalChange = naturalCol !== -1 ? Math.round(num(r[naturalCol])) : 0;
+        const socialChange = socialCol !== -1 ? Math.round(num(r[socialCol])) : 0;
+
+        let lat = null, lng = null;
+        const byName = await geocodeQuery(name + " 長野市 長野県");
+        if (byName) { lat = byName.lat; lng = byName.lng; }
+        if (lat === null) {
+          const angle = (failedIndex * 47) * Math.PI / 180;
+          lat = CENTER_DEFAULT.lat + Math.cos(angle) * 0.02;
+          lng = CENTER_DEFAULT.lng + Math.sin(angle) * 0.02;
+          failed++;
+          failedIndex++;
+        }
+
+        const newDistrict = { id: "d_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7), name, lat, lng, population, pop65, pop75, changeRate2025, naturalChange, socialChange };
+        districts.push(newDistrict);
+        if (useApi) {
+          try { await apiUpsertDistrict(newDistrict); } catch (err) { showStatus("「" + name + "」の同期に失敗しました。", "err"); }
+        }
+        added++;
+      }
+      if (!useApi) await saveData();
+      renderAll();
+      let msg = `取込完了：${added}件追加`;
+      if (failed > 0) msg += `（うち${failed}件は座標が特定できず仮配置。編集画面で修正してください）`;
+      showStatus(msg, failed > 0 ? "err" : "ok");
+    };
+    input.click();
+  });
+
+  document.getElementById("btnExportPop").addEventListener("click", () => {
+    const header = ["地区名", "総人口", "65歳以上人口", "75歳以上人口", "高齢化率(%)", "人口増減率2020-2025(%)", "自然増減", "社会増減", "緯度", "経度"];
+    const rows = districts.map(d => [
+      d.name, d.population || 0, d.pop65 || 0, d.pop75 || 0, districtAgingRate(d),
+      d.changeRate2025 || 0, d.naturalChange || 0, d.socialChange || 0, d.lat, d.lng
+    ]);
+    const ws = XLSX.utils.aoa_to_sheet([header, ...rows]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "地区別人口");
+    XLSX.writeFile(wb, "長野市地区別人口.xlsx");
+  });
 
   // ---------- 同心円コントロールの変更監視 ----------
   ["circleCenterSelect", "circleInterval", "circleCount", "circleToggle"].forEach(id => {
