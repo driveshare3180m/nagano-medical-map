@@ -209,32 +209,42 @@
 (function () {
   "use strict";
 
-  // ---------- 機能定義 ----------
-  const FUNCS = [
-    { key: "急性期", color: "#e63946" },
-    { key: "地メディ", color: "#f4a261" },
-    { key: "地ケア", color: "#2a9d8a" },
-    { key: "回復期", color: "#457b9d" },
-    { key: "療養", color: "#8e44ad" }
+  // ---------- 区分定義 ----------
+  // 病床種別（重複なく合計可能な分類）
+  const BED_TYPE_FUNCS = [
+    { key: "一般病床", color: "#2a9d8a" },
+    { key: "療養病床", color: "#f4a261" },
+    { key: "精神病床", color: "#6a4c93" }
   ];
-  const FUNC_KEYS = FUNCS.map(f => f.key);
+  // 病床機能報告区分（重複なく合計可能な、病床種別とは別の分類軸）
+  const BED_FUNCTION_FUNCS = [
+    { key: "高度急性期", color: "#c0392b" },
+    { key: "急性期", color: "#e76f51" },
+    { key: "回復期", color: "#457b9d" },
+    { key: "慢性期", color: "#8e44ad" }
+  ];
+  // 救急告示区分（病床数ではなく該当有無のフラグ）
+  const EMERGENCY_FUNCS = [
+    { key: "救急告示", color: "#d62839" },
+    { key: "二次救急（病院群輪番制）", color: "#f77f00" },
+    { key: "三次救急", color: "#7209b7" }
+  ];
+  const CLASS_GROUPS = { bedType: BED_TYPE_FUNCS, bedFunction: BED_FUNCTION_FUNCS };
+  const CLASS_GROUP_LABELS = { bedType: "病床種別", bedFunction: "病床機能報告" };
+  const BED_TYPE_KEYS = BED_TYPE_FUNCS.map(f => f.key);
+  const BED_FUNCTION_KEYS = BED_FUNCTION_FUNCS.map(f => f.key);
+  const EMERGENCY_KEYS = EMERGENCY_FUNCS.map(f => f.key);
   const CENTER_DEFAULT = { name: "長野中央病院", lat: 36.651165, lng: 138.195577 };
 
-  const SEED_DATA = [
-    { id: "h1", name: "長野赤十字病院", address: "長野市若里5-22-1", lat: 36.6272, lng: 138.190724,
-      beds: { "急性期": 447, "地メディ": 0, "地ケア": 0, "回復期": 0, "療養": 0 } },
-    { id: "h2", name: "長野中央病院", address: "長野市西鶴賀町1570", lat: 36.651165, lng: 138.195577,
-      beds: { "急性期": 250, "地メディ": 40, "地ケア": 40, "回復期": 30, "療養": 0 } },
-    { id: "h3", name: "長野松代総合病院付属若穂病院", address: "長野市若穂綿内7615-1", lat: 36.6053, lng: 138.2571,
-      beds: { "急性期": 0, "地メディ": 0, "地ケア": 0, "回復期": 0, "療養": 60 },
-      approx: true },
-    { id: "h4", name: "長野松代総合病院", address: "長野市松代町松代183", lat: 36.563652, lng: 138.199614,
-      beds: { "急性期": 199, "地メディ": 0, "地ケア": 0, "回復期": 0, "療養": 0 } }
-  ];
+  // 区分変更に伴い過去データは初期化（空の状態から再構築）
+  const SEED_DATA = [];
 
   // ---------- 状態 ----------
   let hospitals = [];
-  let activeFilters = new Set(FUNC_KEYS); // 表示中の機能
+  let mapClassification = "bedType"; // 地図の色分け・集計に使う分類軸（bedType / bedFunction）
+  let activeBedType = new Set(BED_TYPE_KEYS);
+  let activeBedFunction = new Set(BED_FUNCTION_KEYS);
+  let activeEmergency = new Set(EMERGENCY_KEYS);
   let map, markersLayer, circlesLayer;
   let editingId = null; // 編集中の病院ID（nullなら新規）
   let pickLatLngMode = false;
@@ -245,7 +255,7 @@
     <div class="topbar">
       <div>
         <h1>長野市 医療機関マップ</h1>
-        <div class="sub" id="subTitle">機能別カラー表示 ／ 長野中央病院からの同心円</div>
+        <div class="sub" id="subTitle">病床数・機能別カラー表示 ／ 長野中央病院からの同心円</div>
       </div>
       <div class="topbar-actions">
         <button class="btn secondary" id="btnRefresh" style="display:none;">更新</button>
@@ -259,8 +269,25 @@
       <div class="sidebar">
 
         <div class="panel">
-          <h2>機能フィルタ（表示切替）</h2>
-          <div id="funcFilterList"></div>
+          <h2>地図の色分け・集計基準</h2>
+          <label class="func-row"><input type="radio" name="mapClass" value="bedType" checked /> 病床種別</label>
+          <label class="func-row"><input type="radio" name="mapClass" value="bedFunction" /> 病床機能報告</label>
+          <div class="small-note">選んだ分類の病床数がマーカーの色・数字に反映されます。</div>
+        </div>
+
+        <div class="panel">
+          <h2>病床種別で絞り込み</h2>
+          <div id="bedTypeFilterList"></div>
+        </div>
+
+        <div class="panel">
+          <h2>病床機能報告で絞り込み</h2>
+          <div id="bedFunctionFilterList"></div>
+        </div>
+
+        <div class="panel">
+          <h2>救急告示区分で絞り込み</h2>
+          <div id="emergencyFilterList"></div>
         </div>
 
         <div class="panel">
@@ -292,20 +319,36 @@
     </div>
   `;
 
-  // ---------- 機能フィルタUI ----------
-  const filterListEl = document.getElementById("funcFilterList");
-  FUNCS.forEach(f => {
-    const row = document.createElement("div");
-    row.className = "func-row";
-    row.innerHTML = `<input type="checkbox" checked data-func="${f.key}" />
-      <span class="func-swatch" style="background:${f.color}"></span>
-      <span>${f.key}</span>`;
-    row.querySelector("input").addEventListener("change", (e) => {
-      if (e.target.checked) activeFilters.add(f.key);
-      else activeFilters.delete(f.key);
-      renderMarkers();
+  // ---------- フィルタUI（病床種別／病床機能報告／救急告示区分） ----------
+  function buildFilterGroup(containerId, funcs, activeSet, onChangeRerenderAll) {
+    const el = document.getElementById(containerId);
+    el.innerHTML = "";
+    funcs.forEach(f => {
+      const row = document.createElement("div");
+      row.className = "func-row";
+      row.innerHTML = `<input type="checkbox" checked data-key="${f.key}" />
+        <span class="func-swatch" style="background:${f.color}"></span>
+        <span>${f.key}</span>`;
+      row.querySelector("input").addEventListener("change", (e) => {
+        if (e.target.checked) activeSet.add(f.key);
+        else activeSet.delete(f.key);
+        renderMarkers();
+        if (onChangeRerenderAll) renderList();
+      });
+      el.appendChild(row);
     });
-    filterListEl.appendChild(row);
+  }
+  buildFilterGroup("bedTypeFilterList", BED_TYPE_FUNCS, activeBedType, true);
+  buildFilterGroup("bedFunctionFilterList", BED_FUNCTION_FUNCS, activeBedFunction, true);
+  buildFilterGroup("emergencyFilterList", EMERGENCY_FUNCS, activeEmergency, true);
+
+  document.querySelectorAll('input[name="mapClass"]').forEach(radio => {
+    radio.addEventListener("change", (e) => {
+      if (e.target.checked) {
+        mapClassification = e.target.value;
+        renderMarkers();
+      }
+    });
   });
 
   // ---------- 地図初期化 ----------
@@ -369,14 +412,17 @@
     }
   }
 
-  // ---------- マーカー描画（病床数ベースの円グラフ＋数字表示） ----------
+  // ---------- マーカー描画（分類軸ごとの円グラフ＋数字＋救急バッジ） ----------
   function getVisibleBedEntries(h) {
-    // フィルタで絞られている区分のみ、かつ病床数>0の区分だけを対象にする
-    const allSelected = activeFilters.size === FUNC_KEYS.length;
-    return FUNCS.filter(f => {
-      const count = (h.beds && h.beds[f.key]) || 0;
-      return count > 0 && (allSelected || activeFilters.has(f.key));
-    }).map(f => ({ key: f.key, color: f.color, count: (h.beds && h.beds[f.key]) || 0 }));
+    // 現在の「地図の色分け・集計基準」（病床種別/病床機能報告）に応じた病床エントリを返す
+    const funcs = CLASS_GROUPS[mapClassification];
+    const activeSet = mapClassification === "bedType" ? activeBedType : activeBedFunction;
+    const bedsObj = mapClassification === "bedType" ? h.bedType : h.bedFunction;
+    const allSelected = activeSet.size === funcs.length;
+    return funcs.filter(f => {
+      const count = (bedsObj && bedsObj[f.key]) || 0;
+      return count > 0 && (allSelected || activeSet.has(f.key));
+    }).map(f => ({ key: f.key, color: f.color, count: (bedsObj && bedsObj[f.key]) || 0 }));
   }
 
   function buildPieGradient(entries) {
@@ -394,44 +440,71 @@
     return `conic-gradient(${stops.join(",")})`;
   }
 
+  function bedTypeMatches(h) {
+    const allSelected = activeBedType.size === BED_TYPE_KEYS.length;
+    if (allSelected) return true;
+    return BED_TYPE_KEYS.some(k => activeBedType.has(k) && (h.bedType && h.bedType[k]) > 0);
+  }
+  function bedFunctionMatches(h) {
+    const allSelected = activeBedFunction.size === BED_FUNCTION_KEYS.length;
+    if (allSelected) return true;
+    return BED_FUNCTION_KEYS.some(k => activeBedFunction.has(k) && (h.bedFunction && h.bedFunction[k]) > 0);
+  }
+  function emergencyMatches(h) {
+    const allSelected = activeEmergency.size === EMERGENCY_KEYS.length;
+    if (allSelected) return true;
+    return EMERGENCY_KEYS.some(k => activeEmergency.has(k) && h.emergency && h.emergency[k]);
+  }
+
   function hospitalMatchesFilter(h) {
-    return getVisibleBedEntries(h).length > 0;
+    return bedTypeMatches(h) && bedFunctionMatches(h) && emergencyMatches(h);
   }
 
   function renderMarkers() {
     markersLayer.clearLayers();
     hospitals.forEach(h => {
+      if (!hospitalMatchesFilter(h)) return;
       const entries = getVisibleBedEntries(h);
-      if (entries.length === 0) return;
       const bg = buildPieGradient(entries);
       const totalBeds = entries.reduce((s, e) => s + e.count, 0);
       const chipsHtml = entries.map(e =>
         `<span class="bed-chip" style="background:${e.color}">${e.count}</span>`
       ).join("");
+      const emergencyBadges = EMERGENCY_FUNCS.filter(f => h.emergency && h.emergency[f.key])
+        .map(f => `<span class="bed-chip" style="background:${f.color};">${f.key === "救急告示" ? "救急" : (f.key === "三次救急" ? "3次" : "2次")}</span>`)
+        .join("");
       const icon = L.divIcon({
         className: "hosp-marker",
         html: `<div>
                  <div class="hosp-marker-inner" style="background:${bg}">
-                   <span class="hosp-marker-total">${totalBeds}</span>
+                   <span class="hosp-marker-total">${totalBeds || ""}</span>
                  </div>
                  <div class="hosp-marker-label">${h.name}</div>
                  <div class="hosp-marker-chips">${chipsHtml}</div>
+                 ${emergencyBadges ? `<div class="hosp-marker-chips">${emergencyBadges}</div>` : ""}
                </div>`,
-        iconSize: [26, 58],
+        iconSize: [26, 68],
         iconAnchor: [13, 13]
       });
       const marker = L.marker([h.lat, h.lng], { icon });
-      const allEntries = FUNCS.filter(f => (h.beds && h.beds[f.key]) > 0)
-        .map(f => ({ key: f.key, color: f.color, count: h.beds[f.key] }));
-      const tagsHtml = allEntries
-        .map(e => `<span style="background:${e.color};color:#fff;padding:1px 6px;border-radius:8px;font-size:10px;">${e.key} ${e.count}床</span>`)
-        .join(" ");
-      const allTotal = allEntries.reduce((s, e) => s + e.count, 0);
-      marker.bindPopup(`<div style="font-size:12.5px;min-width:170px;">
+
+      const bedTypeTags = BED_TYPE_FUNCS.filter(f => (h.bedType && h.bedType[f.key]) > 0)
+        .map(f => `<span style="background:${f.color};color:#fff;padding:1px 6px;border-radius:8px;font-size:10px;">${f.key} ${h.bedType[f.key]}床</span>`).join(" ");
+      const bedFunctionTags = BED_FUNCTION_FUNCS.filter(f => (h.bedFunction && h.bedFunction[f.key]) > 0)
+        .map(f => `<span style="background:${f.color};color:#fff;padding:1px 6px;border-radius:8px;font-size:10px;">${f.key} ${h.bedFunction[f.key]}床</span>`).join(" ");
+      const emergencyTags = EMERGENCY_FUNCS.filter(f => h.emergency && h.emergency[f.key])
+        .map(f => `<span style="background:${f.color};color:#fff;padding:1px 6px;border-radius:8px;font-size:10px;">${f.key}</span>`).join(" ");
+
+      marker.bindPopup(`<div style="font-size:12.5px;min-width:190px;">
           <div style="font-weight:700;margin-bottom:3px;">${h.name}</div>
           <div style="color:#777;font-size:11px;margin-bottom:5px;">${h.address || ""}</div>
-          <div style="margin-bottom:4px;">${tagsHtml || "(病床未設定)"}</div>
-          <div style="font-size:11px;color:#555;">総病床数：${allTotal}床</div>
+          <div style="font-size:11px;color:#555;margin-bottom:5px;">許可病床数：${h.licensedBeds || 0}床</div>
+          <div style="font-size:10.5px;color:#888;margin-bottom:2px;">病床種別</div>
+          <div style="margin-bottom:5px;">${bedTypeTags || "(未設定)"}</div>
+          <div style="font-size:10.5px;color:#888;margin-bottom:2px;">病床機能報告</div>
+          <div style="margin-bottom:5px;">${bedFunctionTags || "(未設定)"}</div>
+          <div style="font-size:10.5px;color:#888;margin-bottom:2px;">救急告示区分</div>
+          <div>${emergencyTags || "(該当なし)"}</div>
         </div>`);
       marker.addTo(markersLayer);
     });
@@ -484,15 +557,19 @@
     hospitals.forEach(h => {
       const div = document.createElement("div");
       div.className = "hospital-item";
-      const tagsHtml = FUNC_KEYS.filter(k => (h.beds && h.beds[k]) > 0)
-        .map(k => {
-          const c = FUNCS.find(f => f.key === k).color;
-          return `<span class="tag" style="background:${c}">${k} ${h.beds[k]}床</span>`;
-        }).join("");
+      const bedTypeTags = BED_TYPE_FUNCS.filter(f => (h.bedType && h.bedType[f.key]) > 0)
+        .map(f => `<span class="tag" style="background:${f.color}">${f.key} ${h.bedType[f.key]}床</span>`).join("");
+      const bedFunctionTags = BED_FUNCTION_FUNCS.filter(f => (h.bedFunction && h.bedFunction[f.key]) > 0)
+        .map(f => `<span class="tag" style="background:${f.color}">${f.key} ${h.bedFunction[f.key]}床</span>`).join("");
+      const emergencyTags = EMERGENCY_FUNCS.filter(f => h.emergency && h.emergency[f.key])
+        .map(f => `<span class="tag" style="background:${f.color}">${f.key}</span>`).join("");
       div.innerHTML = `
         <div class="hname">${h.name}${h.approx ? ' <span style="color:#c07a00;font-size:10px;">(座標概算)</span>' : ""}${h.needsBedFix ? ' <span style="color:#c0392b;font-size:10px;">(病床数要確認)</span>' : ""}</div>
         <div class="haddr">${h.address || ""}</div>
-        <div class="htags">${tagsHtml}</div>
+        <div style="font-size:11px;color:#666;margin:2px 0;">許可病床数：${h.licensedBeds || 0}床</div>
+        <div class="htags">${bedTypeTags}</div>
+        <div class="htags" style="margin-top:3px;">${bedFunctionTags}</div>
+        <div class="htags" style="margin-top:3px;">${emergencyTags}</div>
         <div class="item-actions">
           <button class="btn secondary" data-act="focus" data-id="${h.id}">地図で見る</button>
           <button class="btn secondary" data-act="edit" data-id="${h.id}">編集</button>
@@ -567,7 +644,7 @@
   // Claude.aiのartifact内ではwindow.storage（アカウント紐づけの永続保存）を使い、
   // それ以外の環境（Cloudflare Workers / GitHub Pages等にデプロイした場合）では
   // ブラウザのlocalStorage（この端末・このブラウザにのみ保存）に自動的に切り替わります。
-  const STORAGE_KEY = "nagano_medical_hospitals";
+  const STORAGE_KEY = "nagano_medical_hospitals_v2"; // 区分スキーマ変更のためv2に更新（旧データは読み込まれません）
   const hasClaudeStorage = (typeof window.storage !== "undefined" && window.storage && typeof window.storage.get === "function");
 
   // saveData()は「APIモードではない場合のみ」ブラウザ内保存を行います。
@@ -640,20 +717,32 @@
     const initLng = hospital ? hospital.lng : ((prefill && prefill.lng !== undefined) ? prefill.lng : "");
     const overlay = document.createElement("div");
     overlay.className = "modal-overlay";
-    const bedInputsHtml = FUNCS.map(f => {
-      const val = hospital && hospital.beds ? (hospital.beds[f.key] || 0) : 0;
-      return `<div class="row-flex" style="margin-bottom:4px;">
-        <span class="func-swatch" style="background:${f.color};margin-right:4px;"></span>
-        <label style="width:64px;">${f.key}</label>
-        <input type="number" min="0" step="1" data-bedkey="${f.key}" value="${val}" style="width:70px;" />
-        <span style="font-size:11px;color:#888;">床</span>
-      </div>`;
+    const initLicensedBeds = hospital ? (hospital.licensedBeds || 0) : 0;
+
+    function numInputsHtml(funcs, dataAttr, sourceObj) {
+      return funcs.map(f => {
+        const val = sourceObj ? (sourceObj[f.key] || 0) : 0;
+        return `<div class="row-flex" style="margin-bottom:4px;">
+          <span class="func-swatch" style="background:${f.color};margin-right:4px;"></span>
+          <label style="width:84px;">${f.key}</label>
+          <input type="number" min="0" step="1" data-${dataAttr}="${f.key}" value="${val}" style="width:70px;" />
+          <span style="font-size:11px;color:#888;">床</span>
+        </div>`;
+      }).join("");
+    }
+    const bedTypeInputsHtml = numInputsHtml(BED_TYPE_FUNCS, "bedtypekey", hospital ? hospital.bedType : null);
+    const bedFunctionInputsHtml = numInputsHtml(BED_FUNCTION_FUNCS, "bedfunckey", hospital ? hospital.bedFunction : null);
+    const emergencyInputsHtml = EMERGENCY_FUNCS.map(f => {
+      const checked = hospital && hospital.emergency && hospital.emergency[f.key] ? "checked" : "";
+      return `<label class="func-row"><input type="checkbox" data-emgkey="${f.key}" ${checked}/>
+        <span class="func-swatch" style="background:${f.color}"></span>${f.key}</label>`;
     }).join("");
+
     overlay.innerHTML = `
       <div class="modal-box">
         <h3>${hospital ? "医療機関を編集" : "医療機関を追加"}</h3>
         <div class="hint-pin">緯度・経度は「地図をクリックして指定」ボタンを押してから地図上の位置をクリックすると自動入力されます。住所検索も利用できます。地図をダブルクリックすると、その地点の座標付きでこのフォームが開きます。</div>
-        <div class="field"><label>医療機関名</label><input type="text" id="f_name" value="${initName}" /></div>
+        <div class="field"><label>病院名</label><input type="text" id="f_name" value="${initName}" /></div>
         <div class="field"><label>住所</label><input type="text" id="f_address" value="${initAddress}" /></div>
         <div class="row-flex" style="margin-bottom:6px;">
           <button class="btn secondary" id="btnGeocode" style="flex:1;">住所から緯度経度を検索</button>
@@ -662,8 +751,20 @@
         <div class="field"><label>経度 (lng)</label><input type="text" id="f_lng" value="${initLng}" /></div>
         <button class="btn secondary" id="btnPickOnMap" style="width:100%;margin-bottom:8px;">地図をクリックして指定</button>
         <div class="field">
-          <label>区分ごとの病床数（0で「この区分なし」）</label>
-          ${bedInputsHtml}
+          <label>許可病床数（総数）</label>
+          <input type="number" min="0" step="1" id="f_licensedBeds" value="${initLicensedBeds}" />
+        </div>
+        <div class="field">
+          <label>病床種別</label>
+          ${bedTypeInputsHtml}
+        </div>
+        <div class="field">
+          <label>病床機能報告</label>
+          ${bedFunctionInputsHtml}
+        </div>
+        <div class="field">
+          <label>救急告示区分（該当するものにチェック）</label>
+          ${emergencyInputsHtml}
         </div>
         <div class="divider"></div>
         <div class="row-flex" style="justify-content:flex-end;gap:8px;">
@@ -709,18 +810,28 @@
       const lng = parseFloat(document.getElementById("f_lng").value);
       if (!name) { showStatus("医療機関名を入力してください。", "err"); return; }
       if (isNaN(lat) || isNaN(lng)) { showStatus("緯度・経度を指定してください。", "err"); return; }
-      const beds = {};
-      overlay.querySelectorAll("[data-bedkey]").forEach(inp => {
+      const licensedBeds = parseInt(document.getElementById("f_licensedBeds").value, 10) || 0;
+      const bedType = {};
+      overlay.querySelectorAll("[data-bedtypekey]").forEach(inp => {
         const v = parseInt(inp.value, 10);
-        beds[inp.getAttribute("data-bedkey")] = isNaN(v) || v < 0 ? 0 : v;
+        bedType[inp.getAttribute("data-bedtypekey")] = isNaN(v) || v < 0 ? 0 : v;
+      });
+      const bedFunction = {};
+      overlay.querySelectorAll("[data-bedfunckey]").forEach(inp => {
+        const v = parseInt(inp.value, 10);
+        bedFunction[inp.getAttribute("data-bedfunckey")] = isNaN(v) || v < 0 ? 0 : v;
+      });
+      const emergency = {};
+      overlay.querySelectorAll("[data-emgkey]").forEach(cb => {
+        emergency[cb.getAttribute("data-emgkey")] = cb.checked;
       });
 
       let targetHospital;
       if (editingId) {
         targetHospital = hospitals.find(x => x.id === editingId);
-        Object.assign(targetHospital, { name, address, lat, lng, beds, approx: false });
+        Object.assign(targetHospital, { name, address, lat, lng, licensedBeds, bedType, bedFunction, emergency, approx: false });
       } else {
-        targetHospital = { id: "h_" + Date.now(), name, address, lat, lng, beds, approx: false };
+        targetHospital = { id: "h_" + Date.now(), name, address, lat, lng, licensedBeds, bedType, bedFunction, emergency, approx: false };
         hospitals.push(targetHospital);
       }
       renderAll();
@@ -776,37 +887,45 @@
       const wb = XLSX.read(buf, { type: "array" });
       const ws = wb.Sheets[wb.SheetNames[0]];
       const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
-      // ヘッダー行を探す（「医療機関名」を含む行）
-      let headerIdx = rows.findIndex(r => r.some(c => String(c).includes("医療機関名")));
+      // ヘッダー行を探す（「病院名」または「医療機関名」を含む行）
+      let headerIdx = rows.findIndex(r => r.some(c => String(c).includes("病院名") || String(c).includes("医療機関名")));
       if (headerIdx === -1) headerIdx = 0;
       const header = rows[headerIdx].map(c => String(c).trim());
-      const nameCol = header.findIndex(c => c.includes("医療機関名"));
+      const nameCol = header.findIndex(c => c.includes("病院名") || c.includes("医療機関名"));
       const addrCol = header.findIndex(c => c.includes("住所"));
-      const funcCols = {};
-      FUNC_KEYS.forEach(k => {
-        const idx = header.findIndex(c => c === k);
-        if (idx !== -1) funcCols[k] = idx;
-      });
-      if (nameCol === -1) { showStatus("「医療機関名」列が見つかりませんでした。", "err"); return; }
+      const licensedCol = header.findIndex(c => c.includes("許可病床数"));
+      const bedTypeCols = {};
+      BED_TYPE_KEYS.forEach(k => { const idx = header.findIndex(c => c === k); if (idx !== -1) bedTypeCols[k] = idx; });
+      const bedFunctionCols = {};
+      BED_FUNCTION_KEYS.forEach(k => { const idx = header.findIndex(c => c === k); if (idx !== -1) bedFunctionCols[k] = idx; });
+      const emergencyCols = {};
+      EMERGENCY_KEYS.forEach(k => { const idx = header.findIndex(c => c === k); if (idx !== -1) emergencyCols[k] = idx; });
+      if (nameCol === -1) { showStatus("「病院名」列が見つかりませんでした。", "err"); return; }
 
       const dataRows = rows.slice(headerIdx + 1).filter(r => r[nameCol] && String(r[nameCol]).trim());
-      showStatus(`${dataRows.length}件を取込中…（住所から座標を検索しています）`, "info");
+      showStatus(`${dataRows.length}件を取込中…（施設名・住所から座標を検索しています）`, "info");
+
+      function parseBedNum(raw) {
+        const s = String(raw || "").trim();
+        if (s === "") return 0;
+        const n = parseFloat(s.replace(/[^\d.]/g, ""));
+        return (!isNaN(n) && n > 0) ? Math.round(n) : 0;
+      }
+      function parseFlag(raw) {
+        return String(raw || "").trim() !== "";
+      }
 
       let added = 0, failed = 0, failedIndex = 0;
       for (const r of dataRows) {
         const name = String(r[nameCol]).trim();
         const address = addrCol !== -1 ? String(r[addrCol] || "").trim() : "";
         if (hospitals.some(h => h.name === name)) continue; // 重複スキップ
-        const beds = {};
-        let needsBedFix = false;
-        FUNC_KEYS.forEach(k => {
-          const idx = funcCols[k];
-          const raw = idx !== undefined ? String(r[idx] || "").trim() : "";
-          const num = parseFloat(raw.replace(/[^\d.]/g, ""));
-          if (raw === "") { beds[k] = 0; }
-          else if (!isNaN(num) && num > 0) { beds[k] = Math.round(num); }
-          else { beds[k] = 1; needsBedFix = true; } // 「〇」等の印のみで数値が無い場合は仮の1床とし要修正フラグを立てる
-        });
+
+        const licensedBeds = licensedCol !== -1 ? parseBedNum(r[licensedCol]) : 0;
+        const bedType = {}; BED_TYPE_KEYS.forEach(k => { bedType[k] = bedTypeCols[k] !== undefined ? parseBedNum(r[bedTypeCols[k]]) : 0; });
+        const bedFunction = {}; BED_FUNCTION_KEYS.forEach(k => { bedFunction[k] = bedFunctionCols[k] !== undefined ? parseBedNum(r[bedFunctionCols[k]]) : 0; });
+        const emergency = {}; EMERGENCY_KEYS.forEach(k => { emergency[k] = emergencyCols[k] !== undefined ? parseFlag(r[emergencyCols[k]]) : false; });
+
         let lat = null, lng = null, approx = true;
 
         // ① まず施設名で検索（OSMに施設として登録されていれば高確率でヒットする）
@@ -829,7 +948,7 @@
           failedIndex++;
         }
 
-        const newHospital = { id: "h_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7), name, address, lat, lng, beds, approx, needsBedFix };
+        const newHospital = { id: "h_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7), name, address, lat, lng, licensedBeds, bedType, bedFunction, emergency, approx };
         hospitals.push(newHospital);
         if (useApi) {
           try { await apiUpsert(newHospital); } catch (err) { showStatus("「" + name + "」の同期に失敗しました。", "err"); }
@@ -838,21 +957,21 @@
       }
       if (!useApi) await saveData();
       renderAll();
-      const bedFixCount = hospitals.filter(h => h.needsBedFix).length;
       let msg = `取込完了：${added}件追加`;
       if (failed > 0) msg += `（うち${failed}件は座標が特定できず仮配置。編集画面で修正してください）`;
-      if (bedFixCount > 0) msg += `／病床数が「〇」等の印のみで数値不明の項目は仮に1床としています。実数を編集画面で入力してください`;
-      showStatus(msg, (failed > 0 || bedFixCount > 0) ? "err" : "ok");
+      showStatus(msg, failed > 0 ? "err" : "ok");
     };
     input.click();
   });
 
   // ---------- Excel書き出し ----------
   document.getElementById("btnExport").addEventListener("click", () => {
-    const header = ["医療機関名", "住所", ...FUNC_KEYS, "緯度", "経度"];
+    const header = ["病院名", "住所", "許可病床数", ...BED_TYPE_KEYS, ...BED_FUNCTION_KEYS, ...EMERGENCY_KEYS, "緯度", "経度"];
     const rows = hospitals.map(h => [
-      h.name, h.address || "",
-      ...FUNC_KEYS.map(k => (h.beds && h.beds[k]) || 0),
+      h.name, h.address || "", h.licensedBeds || 0,
+      ...BED_TYPE_KEYS.map(k => (h.bedType && h.bedType[k]) || 0),
+      ...BED_FUNCTION_KEYS.map(k => (h.bedFunction && h.bedFunction[k]) || 0),
+      ...EMERGENCY_KEYS.map(k => (h.emergency && h.emergency[k]) ? "〇" : ""),
       h.lat, h.lng
     ]);
     const ws = XLSX.utils.aoa_to_sheet([header, ...rows]);
