@@ -204,63 +204,55 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.heat/0.2.0/leaflet-heat.js"></script>
 
 <script>
 (function () {
   "use strict";
 
   // ---------- 区分定義 ----------
-  // 病床種別（重複なく合計可能な分類）
-  const BED_TYPE_FUNCS = [
-    { key: "一般病床", color: "#2a9d8a" },
-    { key: "療養病床", color: "#f4a261" },
-    { key: "精神病床", color: "#6a4c93" }
-  ];
-  // 病床機能報告区分（入力・保存の対象は以下4区分）
+  // 病床機能報告区分（8区分。病床種別の廃止に伴い療養病床・精神病床もここに統合）
   const BED_FUNCTION_FUNCS = [
     { key: "高度急性期", color: "#c0392b" },
-    { key: "急性期", color: "#e76f51" },
-    { key: "回復期", color: "#457b9d" },
-    { key: "慢性期", color: "#8e44ad" }
+    { key: "急性期", color: "#e67e22" },
+    { key: "地域包括医療", color: "#f1c40f" },
+    { key: "地域包括ケア", color: "#2ecc71" },
+    { key: "回復期リハ", color: "#3498db" },
+    { key: "緩和ケア", color: "#9b59b6" },
+    { key: "療養病床", color: "#16a085" },
+    { key: "精神病床", color: "#34495e" }
   ];
-  // 病床機能報告の表示用（精神病床など機能報告の対象外病床を「その他」として自動算出し追加）
-  const OTHER_FUNC = { key: "その他", color: "#95a5a6" };
-  const BED_FUNCTION_DISPLAY_FUNCS = [...BED_FUNCTION_FUNCS, OTHER_FUNC];
-  const BED_FUNCTION_DISPLAY_KEYS = BED_FUNCTION_DISPLAY_FUNCS.map(f => f.key);
   // 救急告示区分（病床数ではなく該当有無のフラグ）
   const EMERGENCY_FUNCS = [
     { key: "救急告示", color: "#d62839" },
     { key: "二次救急（病院群輪番制）", color: "#f77f00" },
     { key: "三次救急", color: "#7209b7" }
   ];
-  const CLASS_GROUP_LABELS = { bedType: "病床種別", bedFunction: "病床機能報告" };
-  const BED_TYPE_KEYS = BED_TYPE_FUNCS.map(f => f.key);
   const BED_FUNCTION_KEYS = BED_FUNCTION_FUNCS.map(f => f.key);
   const EMERGENCY_KEYS = EMERGENCY_FUNCS.map(f => f.key);
   const CENTER_DEFAULT = { name: "長野中央病院", lat: 36.651165, lng: 138.195577 };
-
-  // 「その他」＝許可病床数から病床機能報告4区分の合計を差し引いた残り（精神病床等、機能報告の対象外分の目安）
-  function otherBedFunctionCount(h) {
-    const sum4 = BED_FUNCTION_KEYS.reduce((s, k) => s + ((h.bedFunction && h.bedFunction[k]) || 0), 0);
-    return Math.max(0, (h.licensedBeds || 0) - sum4);
-  }
-  function getBedFunctionCount(h, key) {
-    if (key === "その他") return otherBedFunctionCount(h);
-    return (h.bedFunction && h.bedFunction[key]) || 0;
-  }
 
   // 区分変更に伴い過去データは初期化（空の状態から再構築）
   const SEED_DATA = [];
 
   // ---------- 地区別人口データの指標定義 ----------
+  // 「〇年後」の推計は、現在の単年齢別人口をそのまま年数分スライドさせる単純推計です
+  // （死亡・転入転出等は考慮していません）。ageMapが無い地区は現在値のみ表示されます。
+  function projectedAgeCount(ageMap, years, thresholdAge) {
+    if (!ageMap) return null;
+    const startAge = Math.max(0, Math.round(thresholdAge - years));
+    let sum = 0;
+    for (let a = startAge; a <= 110; a++) sum += (ageMap[a] || 0);
+    return sum;
+  }
   const POP_METRICS = [
-    { key: "population", label: "総人口", unit: "人", type: "sequential", colorLow: "#eef3f8", colorHigh: "#08519c", getValue: d => d.population || 0 },
-    { key: "pop65", label: "65歳以上人口", unit: "人", type: "sequential", colorLow: "#f5eef8", colorHigh: "#6a1b9a", getValue: d => d.pop65 || 0 },
-    { key: "pop75", label: "75歳以上人口", unit: "人", type: "sequential", colorLow: "#fdf2e9", colorHigh: "#a04000", getValue: d => d.pop75 || 0 },
-    { key: "agingRate", label: "高齢化率", unit: "%", type: "sequential", colorLow: "#fff5e6", colorHigh: "#cc4c02", getValue: d => districtAgingRate(d) },
-    { key: "changeRate2025", label: "人口増減率（2020→2025）", unit: "%", type: "diverging", getValue: d => d.changeRate2025 || 0 },
-    { key: "naturalChange", label: "自然増減", unit: "人", type: "diverging", getValue: d => d.naturalChange || 0 },
-    { key: "socialChange", label: "社会増減", unit: "人", type: "diverging", getValue: d => d.socialChange || 0 }
+    { key: "population", label: "総人口", unit: "人", kind: "radar", getValue: d => d.population || 0 },
+    { key: "pop65proj", label: "65歳以上人口", unit: "人", kind: "radar", getValue: d => d.ageMap ? projectedAgeCount(d.ageMap, popProjectionYears, 65) : (popProjectionYears === 0 ? (d.pop65 || 0) : null) },
+    { key: "pop75proj", label: "75歳以上人口", unit: "人", kind: "radar", getValue: d => d.ageMap ? projectedAgeCount(d.ageMap, popProjectionYears, 75) : (popProjectionYears === 0 ? (d.pop75 || 0) : null) },
+    { key: "agingRate", label: "高齢化率（現在）", unit: "%", kind: "radar", getValue: d => districtAgingRate(d) },
+    { key: "changeRate2025", label: "人口増減率（2020→2025）", unit: "%", kind: "diverging", getValue: d => d.changeRate2025 || 0 },
+    { key: "naturalChange", label: "自然増減", unit: "人", kind: "diverging", getValue: d => d.naturalChange || 0 },
+    { key: "socialChange", label: "社会増減（転入超過＋／転出超過－）", unit: "人", kind: "diverging", getValue: d => d.socialChange || 0 }
   ];
   function districtAgingRate(d) {
     if (!d.population || d.population <= 0) return 0;
@@ -271,12 +263,13 @@
   let hospitals = [];
   let districts = [];
   let mapClassification = "bedFunction"; // 地図の色分け・集計に使う分類軸（bedType / bedFunction）
-  let activeBedType = new Set(BED_TYPE_KEYS);
-  let activeBedFunction = new Set(BED_FUNCTION_DISPLAY_KEYS);
+  let activeBedFunction = new Set(BED_FUNCTION_KEYS);
   let activeEmergency = new Set(EMERGENCY_KEYS);
+  let showSingleSpecialty = true; // 単科病院を表示するかどうか
   let popLayerVisible = false;
   let popMetric = "population";
-  let map, markersLayer, circlesLayer, populationLayer;
+  let popProjectionYears = 0; // 「何年後」の推計年数（65歳以上／75歳以上人口の推計にのみ使用）
+  let map, markersLayer, circlesLayer, populationLayer, populationHeatLayer;
   let editingId = null; // 編集中の病院ID（nullなら新規）
   let editingDistrictId = null; // 編集中の地区ID（nullなら新規）
   let pickLatLngMode = false;
@@ -303,12 +296,7 @@
 
         <div class="panel">
           <h2>地図の色分け・数字表示</h2>
-          <div class="small-note">マーカーの色・数字・円の大きさは「病床機能報告」（高度急性期／急性期／回復期／慢性期／その他）＋許可病床数に基づいて表示されます。</div>
-        </div>
-
-        <div class="panel">
-          <h2>病床種別で絞り込み</h2>
-          <div id="bedTypeFilterList"></div>
+          <div class="small-note">マーカーの色・数字・円の大きさは「病床機能報告」（選択中の区分の病床数）に基づいて表示されます。絞り込みで区分を減らすと、円もその分小さくなります。</div>
         </div>
 
         <div class="panel">
@@ -319,6 +307,11 @@
         <div class="panel">
           <h2>救急告示区分で絞り込み</h2>
           <div id="emergencyFilterList"></div>
+        </div>
+
+        <div class="panel">
+          <h2>単科病院の表示</h2>
+          <label class="func-row"><input type="checkbox" id="singleSpecialtyToggle" checked /> 単科病院を表示する</label>
         </div>
 
         <div class="panel">
@@ -354,22 +347,28 @@
             <label>表示する指標</label>
             <select id="popMetricSelect">
               <option value="population">総人口</option>
-              <option value="pop65">65歳以上人口</option>
-              <option value="pop75">75歳以上人口</option>
-              <option value="agingRate">高齢化率</option>
+              <option value="pop65proj">65歳以上人口</option>
+              <option value="pop75proj">75歳以上人口</option>
+              <option value="agingRate">高齢化率（現在）</option>
               <option value="changeRate2025">人口増減率（2020→2025）</option>
               <option value="naturalChange">自然増減</option>
               <option value="socialChange">社会増減（転入超過＋／転出超過－）</option>
             </select>
           </div>
+          <div class="field" id="popYearsField">
+            <label>65歳以上／75歳以上人口の推計：<span id="popYearsLabel">0</span>年後</label>
+            <input type="range" id="popYearsSlider" min="0" max="30" step="1" value="0" style="width:100%;" />
+            <div class="small-note">単年齢別人口をそのまま年数分スライドさせた簡易推計です（死亡・転入転出は考慮していません）。「年齢別人口Excel取込」で単年齢データを取り込んだ地区のみ推計できます。</div>
+          </div>
           <div id="popLegend" class="small-note"></div>
           <div class="divider"></div>
+          <button class="btn" id="btnImportNenrei" style="width:100%;margin-bottom:6px;">年齢別人口Excel取込（長野市公表フォーマット）</button>
           <div class="row-flex" style="gap:6px; margin-bottom:6px;">
-            <button class="btn secondary" id="btnImportPop" style="flex:1;">Excel取込</button>
+            <button class="btn secondary" id="btnImportPop" style="flex:1;">簡易Excel取込</button>
             <button class="btn secondary" id="btnExportPop" style="flex:1;">書き出し</button>
           </div>
-          <button class="btn" id="btnAddDistrict" style="width:100%;margin-bottom:8px;">＋ 地区を追加</button>
-          <div class="small-note">正式な地区境界データが無いため、円は地区の代表地点を示す簡易表示です（境界データが入手でき次第、正確な塗り分けに差し替え可能です）。</div>
+          <button class="btn secondary" id="btnAddDistrict" style="width:100%;margin-bottom:8px;">＋ 地区を追加</button>
+          <div class="small-note">正式な地区境界データが無いため、色分けは各地区の代表地点を中心にした簡易的な分布表示です（境界データが入手でき次第、正確な塗り分けに差し替え可能です）。</div>
           <div id="districtList" style="margin-top:8px;"></div>
         </div>
 
@@ -397,13 +396,17 @@
       el.appendChild(row);
     });
   }
-  buildFilterGroup("bedTypeFilterList", BED_TYPE_FUNCS, activeBedType, true);
-  buildFilterGroup("bedFunctionFilterList", BED_FUNCTION_DISPLAY_FUNCS, activeBedFunction, true);
+  buildFilterGroup("bedFunctionFilterList", BED_FUNCTION_FUNCS, activeBedFunction, true);
   buildFilterGroup("emergencyFilterList", EMERGENCY_FUNCS, activeEmergency, true);
+  document.getElementById("singleSpecialtyToggle").addEventListener("change", (e) => {
+    showSingleSpecialty = e.target.checked;
+    renderMarkers();
+    renderList();
+  });
 
   // ---------- 地図初期化 ----------
   map = L.map("map", { zoomControl: true }).setView([CENTER_DEFAULT.lat, CENTER_DEFAULT.lng], 12);
-  L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
+  L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", {
     maxZoom: 19,
     attribution: "&copy; OpenStreetMap contributors &copy; CARTO"
   }).addTo(map);
@@ -467,22 +470,13 @@
     }
   }
 
-  // ---------- マーカー描画（分類軸ごとの円グラフ＋数字＋救急バッジ） ----------
+  // ---------- マーカー描画（病床機能報告8区分の円グラフ＋数字＋救急バッジ） ----------
   function getVisibleBedEntries(h) {
-    // 現在の「地図の色分け・集計基準」（病床種別/病床機能報告）に応じた病床エントリを返す
-    if (mapClassification === "bedType") {
-      const allSelected = activeBedType.size === BED_TYPE_KEYS.length;
-      return BED_TYPE_FUNCS.filter(f => {
-        const count = (h.bedType && h.bedType[f.key]) || 0;
-        return count > 0 && (allSelected || activeBedType.has(f.key));
-      }).map(f => ({ key: f.key, color: f.color, count: (h.bedType && h.bedType[f.key]) || 0 }));
-    } else {
-      const allSelected = activeBedFunction.size === BED_FUNCTION_DISPLAY_KEYS.length;
-      return BED_FUNCTION_DISPLAY_FUNCS.filter(f => {
-        const count = getBedFunctionCount(h, f.key);
-        return count > 0 && (allSelected || activeBedFunction.has(f.key));
-      }).map(f => ({ key: f.key, color: f.color, count: getBedFunctionCount(h, f.key) }));
-    }
+    const allSelected = activeBedFunction.size === BED_FUNCTION_KEYS.length;
+    return BED_FUNCTION_FUNCS.filter(f => {
+      const count = (h.bedFunction && h.bedFunction[f.key]) || 0;
+      return count > 0 && (allSelected || activeBedFunction.has(f.key));
+    }).map(f => ({ key: f.key, color: f.color, count: (h.bedFunction && h.bedFunction[f.key]) || 0 }));
   }
 
   function buildPieGradient(entries) {
@@ -500,24 +494,23 @@
     return `conic-gradient(${stops.join(",")})`;
   }
 
-  function bedTypeMatches(h) {
-    const allSelected = activeBedType.size === BED_TYPE_KEYS.length;
-    if (allSelected) return true;
-    return BED_TYPE_KEYS.some(k => activeBedType.has(k) && (h.bedType && h.bedType[k]) > 0);
-  }
   function bedFunctionMatches(h) {
-    const allSelected = activeBedFunction.size === BED_FUNCTION_DISPLAY_KEYS.length;
+    const allSelected = activeBedFunction.size === BED_FUNCTION_KEYS.length;
     if (allSelected) return true;
-    return BED_FUNCTION_DISPLAY_KEYS.some(k => activeBedFunction.has(k) && getBedFunctionCount(h, k) > 0);
+    return BED_FUNCTION_KEYS.some(k => activeBedFunction.has(k) && (h.bedFunction && h.bedFunction[k]) > 0);
   }
   function emergencyMatches(h) {
     const allSelected = activeEmergency.size === EMERGENCY_KEYS.length;
     if (allSelected) return true;
     return EMERGENCY_KEYS.some(k => activeEmergency.has(k) && h.emergency && h.emergency[k]);
   }
+  function singleSpecialtyMatches(h) {
+    if (showSingleSpecialty) return true;
+    return !h.isSingleSpecialty;
+  }
 
   function hospitalMatchesFilter(h) {
-    return bedTypeMatches(h) && bedFunctionMatches(h) && emergencyMatches(h);
+    return bedFunctionMatches(h) && emergencyMatches(h) && singleSpecialtyMatches(h);
   }
 
   function renderMarkers() {
@@ -533,8 +526,8 @@
       const emergencyBadges = EMERGENCY_FUNCS.filter(f => h.emergency && h.emergency[f.key])
         .map(f => `<span class="bed-chip" style="background:${f.color};">${f.key === "救急告示" ? "救急" : (f.key === "三次救急" ? "3次" : "2次")}</span>`)
         .join("");
-      // 円のサイズは許可病床数に比例（面積が概ね比例するよう平方根でスケーリング）
-      const diameter = Math.round(Math.min(64, Math.max(22, 14 + Math.sqrt(Math.max(h.licensedBeds || 0, 0)) * 2.6)));
+      // 円のサイズは「現在表示中（フィルタ後）の病床数」に比例（絞り込むと円も小さくなる）
+      const diameter = Math.round(Math.min(64, Math.max(18, 12 + Math.sqrt(totalBeds) * 2.6)));
       const fontSize = diameter >= 40 ? 12 : (diameter >= 28 ? 10 : 8);
       const icon = L.divIcon({
         className: "hosp-marker",
@@ -551,19 +544,15 @@
       });
       const marker = L.marker([h.lat, h.lng], { icon });
 
-      const bedTypeTags = BED_TYPE_FUNCS.filter(f => (h.bedType && h.bedType[f.key]) > 0)
-        .map(f => `<span style="background:${f.color};color:#fff;padding:1px 6px;border-radius:8px;font-size:10px;">${f.key} ${h.bedType[f.key]}床</span>`).join(" ");
-      const bedFunctionTags = BED_FUNCTION_DISPLAY_FUNCS.filter(f => getBedFunctionCount(h, f.key) > 0)
-        .map(f => `<span style="background:${f.color};color:#fff;padding:1px 6px;border-radius:8px;font-size:10px;">${f.key} ${getBedFunctionCount(h, f.key)}床</span>`).join(" ");
+      const bedFunctionTags = BED_FUNCTION_FUNCS.filter(f => (h.bedFunction && h.bedFunction[f.key]) > 0)
+        .map(f => `<span style="background:${f.color};color:#fff;padding:1px 6px;border-radius:8px;font-size:10px;">${f.key} ${h.bedFunction[f.key]}床</span>`).join(" ");
       const emergencyTags = EMERGENCY_FUNCS.filter(f => h.emergency && h.emergency[f.key])
         .map(f => `<span style="background:${f.color};color:#fff;padding:1px 6px;border-radius:8px;font-size:10px;">${f.key}</span>`).join(" ");
 
       marker.bindPopup(`<div style="font-size:12.5px;min-width:190px;">
-          <div style="font-weight:700;margin-bottom:3px;">${h.name}</div>
+          <div style="font-weight:700;margin-bottom:3px;">${h.name}${h.isSingleSpecialty ? ' <span style="background:#7f8c8d;color:#fff;padding:1px 6px;border-radius:8px;font-size:9px;">単科</span>' : ""}</div>
           <div style="color:#777;font-size:11px;margin-bottom:5px;">${h.address || ""}</div>
           <div style="font-size:11px;color:#555;margin-bottom:5px;">許可病床数：${h.licensedBeds || 0}床</div>
-          <div style="font-size:10.5px;color:#888;margin-bottom:2px;">病床種別</div>
-          <div style="margin-bottom:5px;">${bedTypeTags || "(未設定)"}</div>
           <div style="font-size:10.5px;color:#888;margin-bottom:2px;">病床機能報告</div>
           <div style="margin-bottom:5px;">${bedFunctionTags || "(未設定)"}</div>
           <div style="font-size:10.5px;color:#888;margin-bottom:2px;">救急告示区分</div>
@@ -619,18 +608,15 @@
     hospitals.forEach(h => {
       const div = document.createElement("div");
       div.className = "hospital-item";
-      const bedTypeTags = BED_TYPE_FUNCS.filter(f => (h.bedType && h.bedType[f.key]) > 0)
-        .map(f => `<span class="tag" style="background:${f.color}">${f.key} ${h.bedType[f.key]}床</span>`).join("");
-      const bedFunctionTags = BED_FUNCTION_DISPLAY_FUNCS.filter(f => getBedFunctionCount(h, f.key) > 0)
-        .map(f => `<span class="tag" style="background:${f.color}">${f.key} ${getBedFunctionCount(h, f.key)}床</span>`).join("");
+      const bedFunctionTags = BED_FUNCTION_FUNCS.filter(f => (h.bedFunction && h.bedFunction[f.key]) > 0)
+        .map(f => `<span class="tag" style="background:${f.color}">${f.key} ${h.bedFunction[f.key]}床</span>`).join("");
       const emergencyTags = EMERGENCY_FUNCS.filter(f => h.emergency && h.emergency[f.key])
         .map(f => `<span class="tag" style="background:${f.color}">${f.key}</span>`).join("");
       div.innerHTML = `
-        <div class="hname">${h.name}${h.approx ? ' <span style="color:#c07a00;font-size:10px;">(座標概算)</span>' : ""}${h.needsBedFix ? ' <span style="color:#c0392b;font-size:10px;">(病床数要確認)</span>' : ""}</div>
+        <div class="hname">${h.name}${h.approx ? ' <span style="color:#c07a00;font-size:10px;">(座標概算)</span>' : ""}${h.needsBedFix ? ' <span style="color:#c0392b;font-size:10px;">(病床数要確認)</span>' : ""}${h.isSingleSpecialty ? ' <span style="background:#7f8c8d;color:#fff;padding:1px 6px;border-radius:8px;font-size:10px;">単科</span>' : ""}</div>
         <div class="haddr">${h.address || ""}</div>
         <div style="font-size:11px;color:#666;margin:2px 0;">許可病床数：${h.licensedBeds || 0}床</div>
-        <div class="htags">${bedTypeTags}</div>
-        <div class="htags" style="margin-top:3px;">${bedFunctionTags}</div>
+        <div class="htags">${bedFunctionTags}</div>
         <div class="htags" style="margin-top:3px;">${emergencyTags}</div>
         <div class="item-actions">
           <button class="btn secondary" data-act="focus" data-id="${h.id}">地図で見る</button>
@@ -684,10 +670,25 @@
     const b = Math.round(c1.b + (c2.b - c1.b) * t);
     return `rgb(${r},${g},${b})`;
   }
-  function sequentialColor(value, min, max, colorLow, colorHigh) {
-    if (max === min) return colorLow;
-    const t = Math.max(0, Math.min(1, (value - min) / (max - min)));
-    return lerpColor(colorLow, colorHigh, t);
+  // 降水量レーダー風の配色（青＝少ない → 赤＝多い）
+  const RADAR_STOPS = [
+    { t: 0.0, color: "#2b6cb0" },
+    { t: 0.25, color: "#38b2ac" },
+    { t: 0.5, color: "#68d391" },
+    { t: 0.72, color: "#f6e05e" },
+    { t: 0.86, color: "#ed8936" },
+    { t: 1.0, color: "#c53030" }
+  ];
+  function radarColor(t) {
+    t = Math.max(0, Math.min(1, t));
+    for (let i = 0; i < RADAR_STOPS.length - 1; i++) {
+      const a = RADAR_STOPS[i], b = RADAR_STOPS[i + 1];
+      if (t >= a.t && t <= b.t) {
+        const localT = (b.t === a.t) ? 0 : (t - a.t) / (b.t - a.t);
+        return lerpColor(a.color, b.color, localT);
+      }
+    }
+    return RADAR_STOPS[RADAR_STOPS.length - 1].color;
   }
   function divergingColor(value, maxAbs) {
     if (maxAbs === 0) return "#eeeeee";
@@ -698,47 +699,76 @@
   // ---------- 人口レイヤー描画 ----------
   function renderPopulationLayer() {
     populationLayer.clearLayers();
+    if (populationHeatLayer) { map.removeLayer(populationHeatLayer); populationHeatLayer = null; }
     document.getElementById("popLegend").innerHTML = "";
     if (!popLayerVisible || districts.length === 0) return;
     const metric = POP_METRICS.find(m => m.key === popMetric);
-    const values = districts.map(d => metric.getValue(d));
+    const rawValues = districts.map(d => metric.getValue(d));
+    const values = rawValues.filter(v => v !== null && v !== undefined);
+    if (values.length === 0) return;
     const min = Math.min(...values, 0);
     const max = Math.max(...values, 0);
     const maxAbs = Math.max(...values.map(v => Math.abs(v)), 1);
 
+    if (metric.kind === "radar") {
+      // 降水量レーダー風のぼかしヒートマップ
+      const heatPoints = [];
+      districts.forEach(d => {
+        const val = metric.getValue(d);
+        if (val === null || val === undefined) return;
+        const norm = (max > min) ? (val - min) / (max - min) : 0.5;
+        heatPoints.push([d.lat, d.lng, Math.max(0.08, norm)]);
+      });
+      const gradient = {};
+      RADAR_STOPS.forEach(s => { gradient[s.t] = s.color; });
+      populationHeatLayer = L.heatLayer(heatPoints, {
+        radius: 65, blur: 50, maxZoom: 15, max: 1.0, minOpacity: 0.35,
+        gradient: gradient
+      }).addTo(map);
+    }
+
     districts.forEach(d => {
       const val = metric.getValue(d);
-      const color = metric.type === "diverging" ? divergingColor(val, maxAbs) : sequentialColor(val, min, max, metric.colorLow, metric.colorHigh);
-      const circle = L.circle([d.lat, d.lng], { radius: 1300, color: "#666", weight: 1, fillColor: color, fillOpacity: 0.62 });
-      const valDisp = metric.unit === "%" ? val.toFixed(1) : Math.round(val);
-      circle.bindPopup(`<div style="font-size:12.5px;min-width:170px;">
+      const valDisp = (val === null || val === undefined) ? "データなし"
+        : (metric.unit === "%" ? val.toFixed(1) + metric.unit : Math.round(val) + metric.unit);
+      // クリック用の当たり判定（発散指標の場合は色付き円、レーダー指標の場合は透明円）
+      const clickColor = metric.kind === "diverging" ? divergingColor(val || 0, maxAbs)
+        : (val === null || val === undefined ? "#999" : radarColor(max > min ? (val - min) / (max - min) : 0.5));
+      const circle = L.circle([d.lat, d.lng], {
+        radius: 1100, color: "#555", weight: metric.kind === "diverging" ? 1 : 0.5,
+        fillColor: clickColor, fillOpacity: metric.kind === "diverging" ? 0.6 : 0.18
+      });
+      circle.bindPopup(`<div style="font-size:12.5px;min-width:190px;">
           <div style="font-weight:700;margin-bottom:3px;">${d.name}</div>
+          ${d.dataMonth ? `<div style="font-size:10.5px;color:#999;margin-bottom:3px;">データ時点：${d.dataMonth}</div>` : ""}
           <div style="font-size:11px;color:#555;">総人口：${d.population || 0}人</div>
           <div style="font-size:11px;color:#555;">65歳以上：${d.pop65 || 0}人／75歳以上：${d.pop75 || 0}人</div>
           <div style="font-size:11px;color:#555;">高齢化率：${districtAgingRate(d)}%</div>
           <div style="font-size:11px;color:#555;">人口増減率(2020→2025)：${d.changeRate2025 || 0}%</div>
           <div style="font-size:11px;color:#555;">自然増減：${d.naturalChange || 0}人／社会増減：${d.socialChange || 0}人（${(d.socialChange || 0) >= 0 ? "転入超過" : "転出超過"}）</div>
-          <div style="font-size:11px;color:#3f6b4e;margin-top:4px;">表示中の指標「${metric.label}」：${valDisp}${metric.unit}</div>
+          <div style="font-size:11px;color:#3f6b4e;margin-top:4px;">表示中の指標「${metric.label}」：${valDisp}</div>
+          ${!d.ageMap && (metric.key === "pop65proj" || metric.key === "pop75proj") ? '<div style="font-size:10.5px;color:#c0392b;margin-top:3px;">単年齢データが無いため将来推計はできません（現在値を表示）</div>' : ""}
         </div>`);
       circle.addTo(populationLayer);
       const label = L.marker([d.lat, d.lng], {
         icon: L.divIcon({
           className: "",
-          html: `<div style="font-size:10px;font-weight:700;color:#222;text-shadow:0 0 3px #fff,0 0 3px #fff,0 0 3px #fff;text-align:center;white-space:nowrap;">${d.name}</div>`,
-          iconSize: [120, 16],
-          iconAnchor: [60, 8]
+          html: `<div style="font-size:10px;font-weight:700;color:#222;text-shadow:0 0 3px #fff,0 0 3px #fff,0 0 3px #fff;text-align:center;white-space:nowrap;">${d.name}<br/>${valDisp}</div>`,
+          iconSize: [120, 28],
+          iconAnchor: [60, 14]
         })
       });
       label.addTo(populationLayer);
     });
 
     const legend = document.getElementById("popLegend");
-    if (metric.type === "diverging") {
+    if (metric.kind === "diverging") {
       legend.innerHTML = `<div style="height:10px;border-radius:3px;background:linear-gradient(to right, ${lerpColor("#f5f5f5", "#b2182b", 1)}, #f5f5f5, ${lerpColor("#f5f5f5", "#2166ac", 1)});"></div>
         <div style="display:flex;justify-content:space-between;margin-top:2px;"><span>-${maxAbs}${metric.unit}</span><span>0</span><span>+${maxAbs}${metric.unit}</span></div>`;
     } else {
-      legend.innerHTML = `<div style="height:10px;border-radius:3px;background:linear-gradient(to right, ${metric.colorLow}, ${metric.colorHigh});"></div>
-        <div style="display:flex;justify-content:space-between;margin-top:2px;"><span>${min}${metric.unit}</span><span>${max}${metric.unit}</span></div>`;
+      const stopsCss = RADAR_STOPS.map(s => `${s.color} ${(s.t * 100).toFixed(0)}%`).join(",");
+      legend.innerHTML = `<div style="height:10px;border-radius:3px;background:linear-gradient(to right, ${stopsCss});"></div>
+        <div style="display:flex;justify-content:space-between;margin-top:2px;"><span>${Math.round(min)}${metric.unit}（少）</span><span>${Math.round(max)}${metric.unit}（多）</span></div>`;
     }
   }
 
@@ -927,6 +957,7 @@
     const overlay = document.createElement("div");
     overlay.className = "modal-overlay";
     const initLicensedBeds = hospital ? (hospital.licensedBeds || 0) : 0;
+    const initSingleSpecialty = hospital ? !!hospital.isSingleSpecialty : false;
 
     function numInputsHtml(funcs, dataAttr, sourceObj) {
       return funcs.map(f => {
@@ -939,7 +970,6 @@
         </div>`;
       }).join("");
     }
-    const bedTypeInputsHtml = numInputsHtml(BED_TYPE_FUNCS, "bedtypekey", hospital ? hospital.bedType : null);
     const bedFunctionInputsHtml = numInputsHtml(BED_FUNCTION_FUNCS, "bedfunckey", hospital ? hospital.bedFunction : null);
     const emergencyInputsHtml = EMERGENCY_FUNCS.map(f => {
       const checked = hospital && hospital.emergency && hospital.emergency[f.key] ? "checked" : "";
@@ -964,8 +994,7 @@
           <input type="number" min="0" step="1" id="f_licensedBeds" value="${initLicensedBeds}" />
         </div>
         <div class="field">
-          <label>病床種別</label>
-          ${bedTypeInputsHtml}
+          <label class="func-row"><input type="checkbox" id="f_singleSpecialty" ${initSingleSpecialty ? "checked" : ""}/> 単科病院</label>
         </div>
         <div class="field">
           <label>病床機能報告</label>
@@ -1021,11 +1050,7 @@
       if (!name) { showStatus("医療機関名を入力してください。", "err"); return; }
       if (isNaN(lat) || isNaN(lng)) { showStatus("緯度・経度を指定してください。", "err"); return; }
       const licensedBeds = parseInt(document.getElementById("f_licensedBeds").value, 10) || 0;
-      const bedType = {};
-      overlay.querySelectorAll("[data-bedtypekey]").forEach(inp => {
-        const v = parseInt(inp.value, 10);
-        bedType[inp.getAttribute("data-bedtypekey")] = isNaN(v) || v < 0 ? 0 : v;
-      });
+      const isSingleSpecialty = document.getElementById("f_singleSpecialty").checked;
       const bedFunction = {};
       overlay.querySelectorAll("[data-bedfunckey]").forEach(inp => {
         const v = parseInt(inp.value, 10);
@@ -1039,9 +1064,9 @@
       let targetHospital;
       if (editingId) {
         targetHospital = hospitals.find(x => x.id === editingId);
-        Object.assign(targetHospital, { name, address, lat, lng, licensedBeds, bedType, bedFunction, emergency, approx: false });
+        Object.assign(targetHospital, { name, address, lat, lng, licensedBeds, isSingleSpecialty, bedFunction, emergency, approx: false });
       } else {
-        targetHospital = { id: "h_" + Date.now(), name, address, lat, lng, licensedBeds, bedType, bedFunction, emergency, approx: false };
+        targetHospital = { id: "h_" + Date.now(), name, address, lat, lng, licensedBeds, isSingleSpecialty, bedFunction, emergency, approx: false };
         hospitals.push(targetHospital);
       }
       renderAll();
@@ -1143,6 +1168,116 @@
     popMetric = e.target.value;
     renderPopulationLayer();
   });
+  document.getElementById("popYearsSlider").addEventListener("input", (e) => {
+    popProjectionYears = parseInt(e.target.value, 10) || 0;
+    document.getElementById("popYearsLabel").textContent = popProjectionYears;
+    renderPopulationLayer();
+  });
+
+  // ---------- 年齢別人口Excel取込（長野市公表フォーマット：シート＝地区、単年齢×性別） ----------
+  document.getElementById("btnImportNenrei").addEventListener("click", () => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".xlsx,.xls";
+    input.onchange = async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type: "array" });
+
+      // ファイル名から年月を推定（例: nenrei-202608.xlsx → 2026年8月）
+      let dataMonth = "";
+      const mMatch = file.name.match(/(\d{4})(\d{2})/);
+      if (mMatch) dataMonth = `${mMatch[1]}年${parseInt(mMatch[2], 10)}月`;
+
+      // 「長野管内」は19地区の合計と重複するため除外。総合計・年齢別3区分別人口も集計用シートのため除外。
+      const EXCLUDE = new Set(["総合計", "年齢別３区分別人口", "長野管内"]);
+      const blockAgeCols = [0, 4, 8, 12, 16];
+      const parsed = [];
+
+      wb.SheetNames.forEach(sheetName => {
+        if (EXCLUDE.has(sheetName)) return;
+        const ws = wb.Sheets[sheetName];
+        if (!ws) return;
+        const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
+        if (rows.length < 3) return;
+        const headerRow = rows[1] || [];
+        if (!headerRow.some(c => String(c || "").includes("年"))) return; // 年齢別人口表以外のシートはスキップ
+
+        const ageMap = new Array(111).fill(0);
+        let total = null, pop65 = null, pop75 = null;
+        for (let r = 2; r < rows.length; r++) {
+          const row = rows[r];
+          if (!row) continue;
+          blockAgeCols.forEach(ac => {
+            const ageVal = row[ac];
+            const totVal = row[ac + 1];
+            if (typeof ageVal === "number") {
+              const idx = Math.max(0, Math.min(Math.round(ageVal), 110));
+              ageMap[idx] += (typeof totVal === "number" ? totVal : 0);
+            } else if (typeof ageVal === "string") {
+              const s = ageVal.trim();
+              if (s === "総計") total = totVal;
+              else if (s === "老年人口") pop65 = totVal;
+              else if (s === "75歳以上") pop75 = totVal;
+              else if (s === "110歳以上計") ageMap[110] += (typeof totVal === "number" ? totVal : 0);
+            }
+          });
+        }
+        if (total === null || total === undefined) total = ageMap.reduce((a, b) => a + b, 0);
+        if (!total) return; // データが読み取れなかったシートはスキップ
+        if (pop65 === null || pop65 === undefined) { pop65 = 0; for (let a = 65; a <= 110; a++) pop65 += ageMap[a]; }
+        if (pop75 === null || pop75 === undefined) { pop75 = 0; for (let a = 75; a <= 110; a++) pop75 += ageMap[a]; }
+
+        // 「◯◯管内」は地名そのもの、それ以外（第一〜第五・芹田等の旧市街地区）は「地区」を付けて検索
+        const isKannai = /管内$/.test(sheetName);
+        const displayName = isKannai ? sheetName.replace(/管内$/, "") : sheetName;
+        const geocodeName = isKannai ? sheetName.replace(/管内$/, "") : (sheetName + "地区");
+        parsed.push({ displayName, geocodeName, total, pop65, pop75, ageMap });
+      });
+
+      if (parsed.length === 0) { showStatus("対応する地区シートが見つかりませんでした。ファイル形式をご確認ください。", "err"); return; }
+
+      showStatus(`${parsed.length}件の地区データを取込中…（新規地区のみ座標検索を行います）`, "info");
+      let added = 0, updated = 0, failed = 0, failedIndex = 0;
+      for (const p of parsed) {
+        let existing = districts.find(d => d.name === p.displayName);
+        let lat = existing ? existing.lat : null;
+        let lng = existing ? existing.lng : null;
+        if (lat === null || lng === null) {
+          const geo = await geocodeQuery(p.geocodeName + " 長野市 長野県");
+          if (geo) { lat = geo.lat; lng = geo.lng; }
+          else {
+            const angle = (failedIndex * 47) * Math.PI / 180;
+            lat = CENTER_DEFAULT.lat + Math.cos(angle) * 0.06;
+            lng = CENTER_DEFAULT.lng + Math.sin(angle) * 0.06;
+            failed++; failedIndex++;
+          }
+        }
+        if (existing) {
+          Object.assign(existing, { lat, lng, population: p.total, pop65: p.pop65, pop75: p.pop75, ageMap: p.ageMap, dataMonth });
+          updated++;
+        } else {
+          existing = {
+            id: "d_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7), name: p.displayName, lat, lng,
+            population: p.total, pop65: p.pop65, pop75: p.pop75, changeRate2025: 0, naturalChange: 0, socialChange: 0,
+            ageMap: p.ageMap, dataMonth
+          };
+          districts.push(existing);
+          added++;
+        }
+        if (useApi) {
+          try { await apiUpsertDistrict(existing); } catch (err) { showStatus("「" + p.displayName + "」の同期に失敗しました。", "err"); }
+        }
+      }
+      if (!useApi) await saveData();
+      renderAll();
+      let msg = `取込完了：新規${added}件／更新${updated}件${dataMonth ? `（データ時点：${dataMonth}）` : ""}`;
+      if (failed > 0) msg += `／${failed}件は座標が特定できず仮配置。編集画面で修正してください`;
+      showStatus(msg, failed > 0 ? "err" : "ok");
+    };
+    input.click();
+  });
 
   // ---------- 地区データのExcel取込・書き出し ----------
   document.getElementById("btnImportPop").addEventListener("click", () => {
@@ -1212,10 +1347,10 @@
   });
 
   document.getElementById("btnExportPop").addEventListener("click", () => {
-    const header = ["地区名", "総人口", "65歳以上人口", "75歳以上人口", "高齢化率(%)", "人口増減率2020-2025(%)", "自然増減", "社会増減", "緯度", "経度"];
+    const header = ["地区名", "総人口", "65歳以上人口", "75歳以上人口", "高齢化率(%)", "人口増減率2020-2025(%)", "自然増減", "社会増減", "データ時点", "緯度", "経度"];
     const rows = districts.map(d => [
       d.name, d.population || 0, d.pop65 || 0, d.pop75 || 0, districtAgingRate(d),
-      d.changeRate2025 || 0, d.naturalChange || 0, d.socialChange || 0, d.lat, d.lng
+      d.changeRate2025 || 0, d.naturalChange || 0, d.socialChange || 0, d.dataMonth || "", d.lat, d.lng
     ]);
     const ws = XLSX.utils.aoa_to_sheet([header, ...rows]);
     const wb = XLSX.utils.book_new();
@@ -1266,8 +1401,7 @@
       const nameCol = header.findIndex(c => c.includes("病院名") || c.includes("医療機関名"));
       const addrCol = header.findIndex(c => c.includes("住所"));
       const licensedCol = header.findIndex(c => c.includes("許可病床数"));
-      const bedTypeCols = {};
-      BED_TYPE_KEYS.forEach(k => { const idx = header.findIndex(c => c === k); if (idx !== -1) bedTypeCols[k] = idx; });
+      const singleSpecialtyCol = header.findIndex(c => c.includes("単科"));
       const bedFunctionCols = {};
       BED_FUNCTION_KEYS.forEach(k => { const idx = header.findIndex(c => c === k); if (idx !== -1) bedFunctionCols[k] = idx; });
       const emergencyCols = {};
@@ -1294,7 +1428,7 @@
         if (hospitals.some(h => h.name === name)) continue; // 重複スキップ
 
         const licensedBeds = licensedCol !== -1 ? parseBedNum(r[licensedCol]) : 0;
-        const bedType = {}; BED_TYPE_KEYS.forEach(k => { bedType[k] = bedTypeCols[k] !== undefined ? parseBedNum(r[bedTypeCols[k]]) : 0; });
+        const isSingleSpecialty = singleSpecialtyCol !== -1 ? parseFlag(r[singleSpecialtyCol]) : false;
         const bedFunction = {}; BED_FUNCTION_KEYS.forEach(k => { bedFunction[k] = bedFunctionCols[k] !== undefined ? parseBedNum(r[bedFunctionCols[k]]) : 0; });
         const emergency = {}; EMERGENCY_KEYS.forEach(k => { emergency[k] = emergencyCols[k] !== undefined ? parseFlag(r[emergencyCols[k]]) : false; });
 
@@ -1320,7 +1454,7 @@
           failedIndex++;
         }
 
-        const newHospital = { id: "h_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7), name, address, lat, lng, licensedBeds, bedType, bedFunction, emergency, approx };
+        const newHospital = { id: "h_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7), name, address, lat, lng, licensedBeds, isSingleSpecialty, bedFunction, emergency, approx };
         hospitals.push(newHospital);
         if (useApi) {
           try { await apiUpsert(newHospital); } catch (err) { showStatus("「" + name + "」の同期に失敗しました。", "err"); }
@@ -1338,10 +1472,9 @@
 
   // ---------- Excel書き出し ----------
   document.getElementById("btnExport").addEventListener("click", () => {
-    const header = ["病院名", "住所", "許可病床数", ...BED_TYPE_KEYS, ...BED_FUNCTION_KEYS, ...EMERGENCY_KEYS, "緯度", "経度"];
+    const header = ["病院名", "住所", "許可病床数", "単科病院", ...BED_FUNCTION_KEYS, ...EMERGENCY_KEYS, "緯度", "経度"];
     const rows = hospitals.map(h => [
-      h.name, h.address || "", h.licensedBeds || 0,
-      ...BED_TYPE_KEYS.map(k => (h.bedType && h.bedType[k]) || 0),
+      h.name, h.address || "", h.licensedBeds || 0, h.isSingleSpecialty ? "〇" : "",
       ...BED_FUNCTION_KEYS.map(k => (h.bedFunction && h.bedFunction[k]) || 0),
       ...EMERGENCY_KEYS.map(k => (h.emergency && h.emergency[k]) ? "〇" : ""),
       h.lat, h.lng
