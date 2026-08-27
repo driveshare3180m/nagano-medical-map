@@ -63,6 +63,10 @@
     min-height: 0;
   }
   #map { flex: 1; min-width: 0; }
+  /* 標準OSMタイルは彩度が高いため、地形は保ちつつ落ち着いた見た目にするフィルター */
+  .map-muted-tiles .leaflet-tile-pane {
+    filter: saturate(55%) brightness(1.08) contrast(92%);
+  }
   .sidebar {
     width: 340px;
     min-width: 340px;
@@ -406,10 +410,13 @@
 
   // ---------- 地図初期化 ----------
   map = L.map("map", { zoomControl: true }).setView([CENTER_DEFAULT.lat, CENTER_DEFAULT.lng], 12);
-  L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", {
+  // CartoDBの無料ベースマップはAPIキー必須になったため、キー不要な標準OSMタイルを使用。
+  // 彩度を少し抑えるCSSフィルターを地図パネルにかけて、マーカーが目立ちつつ地形も見えるようにする。
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
     maxZoom: 19,
-    attribution: "&copy; OpenStreetMap contributors &copy; CARTO"
+    attribution: "&copy; OpenStreetMap contributors"
   }).addTo(map);
+  document.getElementById("map").classList.add("map-muted-tiles");
   L.control.scale({ metric: true, imperial: false, position: "bottomleft" }).addTo(map);
   markersLayer = L.layerGroup().addTo(map);
   circlesLayer = L.layerGroup().addTo(map);
