@@ -535,8 +535,9 @@
         .map(f => `<span class="bed-chip" style="background:${f.color};">${f.key === "救急告示" ? "救急" : (f.key === "三次救急" ? "3次" : "2次")}</span>`)
         .join("");
       // 円のサイズは「現在表示中（フィルタ後）の病床数」に比例（絞り込むと円も小さくなる）
-      const diameter = Math.round(Math.min(64, Math.max(18, 12 + Math.sqrt(totalBeds) * 2.6)));
-      const fontSize = diameter >= 40 ? 12 : (diameter >= 28 ? 10 : 8);
+      // 上限を80pxまで拡張し、係数を調整（300床と700床のような差が視覚的に区別できるように）
+      const diameter = Math.round(Math.min(80, Math.max(16, 14 + Math.sqrt(totalBeds) * 2.2)));
+      const fontSize = diameter >= 60 ? 14 : diameter >= 40 ? 12 : (diameter >= 28 ? 10 : 8);
       const icon = L.divIcon({
         className: "hosp-marker",
         html: `<div>
