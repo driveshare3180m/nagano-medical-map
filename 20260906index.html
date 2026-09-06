@@ -230,11 +230,7 @@
   const BED_FUNCTION_KEYS = BED_FUNCTION_FUNCS.map(f => f.key);
   const CENTER_DEFAULT = { name: "長野中央病院", lat: 36.651165, lng: 138.195577 };
   // 表示/非表示を個別に切り替えられる特定病院（名称一致）
-  const NAMED_TOGGLE_HOSPITALS = [
-    "長野赤十字病院", "長野市民病院",
-    "長野県立総合リハビリテーションセンター", "竹重病院", "山田記念朝日病院",
-    "田中病院", "東口病院", "北野病院", "吉田病院"
-  ];
+  const NAMED_TOGGLE_HOSPITALS = ["長野赤十字病院", "長野市民病院"];
 
   // 区分変更に伴い過去データは初期化（空の状態から再構築）
   const SEED_DATA = [];
@@ -269,7 +265,7 @@
   let mapClassification = "bedFunction"; // 地図の色分け・集計に使う分類軸（bedType / bedFunction）
   let activeBedFunction = new Set(BED_FUNCTION_KEYS);
   let showSingleSpecialty = true; // 単科病院を表示するかどうか
-  let namedHospitalVisibility = Object.fromEntries(NAMED_TOGGLE_HOSPITALS.map(name => [name, true])); // 特定病院の個別表示切替
+  let namedHospitalVisibility = { "長野赤十字病院": true, "長野市民病院": true }; // 特定病院の個別表示切替
   let popLayerVisible = false;
   let popMetric = "population";
   let popProjectionYears = 0; // 「何年後」の推計年数（65歳以上／75歳以上人口の推計にのみ使用）
